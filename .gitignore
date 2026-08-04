@@ -1,0 +1,20 @@
+# IDE and operating-system files
+.idea/
+.vs/
+.vscode/
+*.suo
+*.user
+.DS_Store
+Thumbs.db
+
+# Build output
+bin/
+obj/
+artifacts/
+*.tmod
+*.log
+
+# Local source artwork and scratch files
+assets/
+*.bak
+*.tmp

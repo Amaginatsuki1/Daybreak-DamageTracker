@@ -1,0 +1,7 @@
+displayName = Daybreak DamageTracker
+author = Daybreak
+version = 0.1.5
+side = Both
+homepage = https://github.com/Amaginatsuki1/Daybreak-DamageTracker
+includeSource = true
+buildIgnore = *.csproj, *.user, obj\*, bin\*, .git\*, .github\*, .idea\*, .vs\*, .vscode\*, artifacts\*, assets\*, .editorconfig, .gitattributes, .gitignore, CHANGELOG.md, CONTRIBUTING.md, README.md, README.zh-CN.md, SERVER_CONFIG.md, TESTING.md, THIRD_PARTY_NOTICES.md

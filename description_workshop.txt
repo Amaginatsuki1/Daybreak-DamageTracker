@@ -1,0 +1,65 @@
+[h1]Daybreak DamageTracker[/h1]
+
+一个可由服务器统一配置、为多人联机设计的 Boss 战伤害统计模组。
+
+[h2]结算内容[/h2]
+
+战斗结束后会自动弹出结算面板，显示：
+
+[list]
+[*]Boss 名称与头像
+[*]结算状态
+[*]团队总伤害
+[*]团队对 Boss 本体造成的伤害
+[*]战斗持续时间
+[*]玩家伤害排名及占比
+[*]仅自己可见的伤害来源树
+[*]武器或饰品总伤害、武器本体伤害及各类弹幕伤害
+[/list]
+
+结算面板支持提前关闭和自动消失。关闭后可使用 [b]/dt[/b] 再次打开历史结算。
+
+[h2]多人联机[/h2]
+
+多人游戏时，服务端与所有客户端都需要安装本模组。
+
+显示规则和数据权限由服务器统一设置，客户端目前不能单独修改。团队排名可以公开，但详细伤害来源树始终只向对应玩家本人发送。
+
+支持原版 Boss，并通过
+[url=https://steamcommunity.com/sharedfiles/filedetails/?id=2669644269]Boss Checklist[/url]
+尽可能适配模组 Boss。Boss Checklist 是可选兼容模组，并非必要前置。
+
+部分具有特殊转阶段、长时间演出或非常规 NPC 结构的模组 Boss，可能需要额外的服务端配置。
+
+[h2]查看与交互[/h2]
+
+每个来源默认显示由服务器设定数量的弹幕。可以在面板内展开或收起遗漏弹幕、折叠整条来源，也可以展开超过默认数量的其他伤害来源。
+
+内容较多时，面板会限制在当前游戏视口内。鼠标悬停后可使用滚轮浏览，右侧会显示滚动位置；点击或滚动会把自动结算转为常驻查看，关闭按钮始终固定在面板右上角。
+
+[h2]说明[/h2]
+
+项目按 MIT 许可证开放源代码：
+[url=https://github.com/Amaginatsuki1/Daybreak-DamageTracker]GitHub / Daybreak-DamageTracker[/url]
+
+欢迎提交可复现的问题和范围明确的改进；特殊转阶段 Boss 仍可能需要服务端覆盖配置。
+
+[hr][/hr]
+
+[h1]参考与鸣谢[/h1]
+
+Daybreak DamageTracker 为独立实现，开发过程中参考了以下项目的功能思路、公开接口和开发示例。
+
+[list]
+[*][url=https://github.com/JeseKi/KiSpaceDamageCalc]Jese&Beta's Damage Calc / KiSpaceDamageCalc[/url]
+[*][url=https://github.com/tModLoader/tModLoader]tModLoader ExampleMod[/url]
+[*][url=https://github.com/JavidPack/BossChecklist]Boss Checklist[/url]
+[*][url=https://github.com/JavidPack/DPSExtreme]DPSExtreme[/url]
+[*][url=https://github.com/487666123/ImproveGame]ImproveGame[/url]
+[/list]
+
+感谢以上项目。
+
+[quote=tModLoader DaybreakDamageTracker]
+Developed By Daybreak
+[/quote]

@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TModLoaderTargets Condition="'$(TModLoaderTargets)' == '' and Exists('..\tModLoader.targets')">..\tModLoader.targets</TModLoaderTargets>
+  </PropertyGroup>
+  <Import Project="$(TModLoaderTargets)" Condition="Exists('$(TModLoaderTargets)')" />
+  <PropertyGroup>
+    <AssemblyName>DaybreakDamageTracker</AssemblyName>
+    <RootNamespace>DaybreakDamageTracker</RootNamespace>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+  <Target Name="RequireTModLoaderTargets" BeforeTargets="PrepareForBuild" Condition="!Exists('$(TModLoaderTargets)')">
+    <Error Text="tModLoader build targets were not found. Clone into ModSources or pass -p:TModLoaderTargets=&quot;path/to/tMLMod.targets&quot;." />
+  </Target>
+</Project>

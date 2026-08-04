@@ -1,0 +1,48 @@
+Mods: {
+	DaybreakDamageTracker: {
+		UI: {
+			UnknownBoss: Unknown boss
+			TeamTotal: Team total damage
+			BossBodyDamage: Damage to boss body
+			Unattributed: Unattributed/server-side damage
+			Duration: Duration
+			Ranking: Player damage ranking
+			PersonalBreakdown: Your damage sources — {0}
+			PersonalBreakdownUnknown: Your damage sources
+			NoDamage: No attributable player damage
+			NoPersonalDamage: You dealt no attributable damage
+			NoPrivateHistory: No private source data is available for this result
+			OtherPlayers: Other {0} players
+			OtherProjectiles: ▶ Other {0} projectiles
+			CollapseProjectiles: ▼ Collapse projectile list
+			CollapseProjectilesClipped: ▼ Collapse ({0} projectiles do not fit)
+			OtherSources: ▶ Other {0} sources
+			CollapseSources: ▼ Collapse source list
+			CollapseSourcesClipped: ▼ Collapse source list ({0} sources do not fit)
+			MoreRows: "{0} more source rows collapsed"
+			ServerReconciled: Source values were reconciled to the server-confirmed total
+			MountSource: Mount #{0}
+			ProjectileSource: Projectile #{0}
+			Unclassified: Unclassified damage
+			UnknownSource: Unknown source
+			WeaponBody: Weapon body
+		}
+
+		Outcome: {
+			Unknown: Result
+			Victory: Victory
+			Defeat: Defeat
+			Escaped: Boss escaped
+			Manual: Manually ended
+		}
+
+		Chat.SavedResult: "[DT] {0} — team {1}, {2}. /dt to reopen"
+
+		Commands: {
+			Dt: {
+				Description: Open or close saved damage results.
+				NoHistory: No saved damage result is available.
+			}
+		}
+	}
+}

@@ -1,0 +1,48 @@
+Mods: {
+	DaybreakDamageTracker: {
+		UI: {
+			UnknownBoss: 未知 Boss
+			TeamTotal: 团队总伤害
+			BossBodyDamage: 团队对 Boss 本体伤害
+			Unattributed: 未归属/服务端伤害
+			Duration: 战斗时长
+			Ranking: 玩家伤害排名
+			PersonalBreakdown: 你的伤害构成 — {0}
+			PersonalBreakdownUnknown: 你的伤害构成
+			NoDamage: 没有可归属的玩家伤害
+			NoPersonalDamage: 你没有可统计伤害
+			NoPrivateHistory: 这条历史记录没有本人的来源数据
+			OtherPlayers: 其他 {0} 名玩家
+			OtherProjectiles: ▶ 其他 {0} 种弹幕
+			CollapseProjectiles: ▼ 收起弹幕列表
+			CollapseProjectilesClipped: ▼ 收起（另有 {0} 种超出屏幕）
+			OtherSources: ▶ 其他 {0} 个来源
+			CollapseSources: ▼ 收起来源列表
+			CollapseSourcesClipped: ▼ 收起来源列表（另有 {0} 个来源未显示）
+			MoreRows: 另有 {0} 行来源已折叠
+			ServerReconciled: 来源数值已按服务器确认的个人总伤害校准
+			MountSource: 坐骑 #{0}
+			ProjectileSource: 弹幕 #{0}
+			Unclassified: 未分类伤害
+			UnknownSource: 未知来源
+			WeaponBody: 武器本体
+		}
+
+		Outcome: {
+			Unknown: 结算
+			Victory: 胜利
+			Defeat: 失败
+			Escaped: Boss 已逃离
+			Manual: 管理员结束
+		}
+
+		Chat.SavedResult: "[DT] {0} — 团队 {1}，用时 {2}。输入 /dt 可重新查看"
+
+		Commands: {
+			Dt: {
+				Description: 打开或关闭已保存的伤害结算。
+				NoHistory: 当前没有已保存的伤害结算。
+			}
+		}
+	}
+}
