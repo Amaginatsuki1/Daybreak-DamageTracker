@@ -9,6 +9,7 @@ internal static class PacketIO
     private const int MaximumBossTextLength = 80;
     private const int MaximumLocalizationKeyLength = 256;
     private const int MaximumPlayerNameLength = 24;
+    private const int MaximumNpcTypesPerBoss = 256;
 
     public static void WritePresentation(BinaryWriter writer, PresentationSettings value)
     {
@@ -66,6 +67,10 @@ internal static class PacketIO
             writer.Write7BitEncodedInt(Math.Max(-1, boss.NameNpcType) + 1);
             writer.Write(Bounded(boss.Name, MaximumBossTextLength));
             writer.Write7BitEncodedInt(Math.Max(0, boss.PortraitNpcType));
+            writer.Write((byte)boss.Outcome);
+            writer.Write(Math.Max(0, boss.BodyDamage));
+            WriteNpcTypes(writer, boss.BodyNpcTypes);
+            WriteNpcTypes(writer, boss.AssociatedNpcTypes);
         }
     }
 
@@ -81,7 +86,11 @@ internal static class PacketIO
                 NameLocalizationKey = reader.ReadString(),
                 NameNpcType = reader.Read7BitEncodedInt() - 1,
                 Name = reader.ReadString(),
-                PortraitNpcType = reader.Read7BitEncodedInt()
+                PortraitNpcType = reader.Read7BitEncodedInt(),
+                Outcome = ReadOutcome(reader),
+                BodyDamage = Math.Max(0, reader.ReadInt64()),
+                BodyNpcTypes = ReadNpcTypes(reader),
+                AssociatedNpcTypes = ReadNpcTypes(reader)
             });
         }
         return bosses;
@@ -89,8 +98,9 @@ internal static class PacketIO
 
     public static void WriteResult(BinaryWriter writer, PublicResultSnapshot result, long? ownDamage)
     {
-        writer.Write((byte)3);
+        writer.Write((byte)5);
         writer.Write(result.EncounterId);
+        writer.Write(result.EncounterComplete);
         writer.Write((byte)result.Outcome);
         writer.Write(result.DurationTicks);
         writer.Write(result.TeamDamage);
@@ -112,13 +122,14 @@ internal static class PacketIO
     public static ResultDelivery ReadResult(BinaryReader reader)
     {
         byte version = reader.ReadByte();
-        if (version != 3)
+        if (version != 5)
             throw new IOException($"Unsupported result version {version}.");
 
         PublicResultSnapshot result = new()
         {
             EncounterId = reader.ReadInt64(),
-            Outcome = (EncounterOutcome)reader.ReadByte(),
+            EncounterComplete = reader.ReadBoolean(),
+            Outcome = ReadOutcome(reader),
             DurationTicks = Math.Max(0, reader.ReadInt64()),
             TeamDamage = Math.Max(0, reader.ReadInt64()),
             BossBodyDamage = Math.Max(0, reader.ReadInt64()),
@@ -146,6 +157,40 @@ internal static class PacketIO
     {
         string text = value ?? string.Empty;
         return text.Length <= maximumLength ? text : text[..maximumLength];
+    }
+
+    private static void WriteNpcTypes(BinaryWriter writer, IEnumerable<int> values)
+    {
+        int[] types = values
+            .Where(type => type >= 0 && type < NPCLoader.NPCCount)
+            .Distinct()
+            .Take(MaximumNpcTypesPerBoss)
+            .ToArray();
+        writer.Write7BitEncodedInt(types.Length);
+        foreach (int type in types)
+            writer.Write7BitEncodedInt(type);
+    }
+
+    private static List<int> ReadNpcTypes(BinaryReader reader)
+    {
+        int count = ReadBoundedCount(reader, MaximumNpcTypesPerBoss, "NPC type");
+        List<int> values = new(count);
+        for (int i = 0; i < count; i++)
+        {
+            int type = reader.Read7BitEncodedInt();
+            if (type < 0 || type >= NPCLoader.NPCCount)
+                throw new IOException($"Invalid NPC type {type}.");
+            values.Add(type);
+        }
+        return values;
+    }
+
+    private static EncounterOutcome ReadOutcome(BinaryReader reader)
+    {
+        EncounterOutcome outcome = (EncounterOutcome)reader.ReadByte();
+        if (!Enum.IsDefined(outcome))
+            throw new IOException($"Invalid encounter outcome {(byte)outcome}.");
+        return outcome;
     }
 
     private static int ReadBoundedCount(BinaryReader reader, int maximum, string label)

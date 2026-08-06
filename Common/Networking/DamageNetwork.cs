@@ -16,7 +16,9 @@ internal enum DamagePacketType : byte
     PublicResult,
     HistorySyncBegin,
     HistorySyncEntry,
-    ProjectileProvenance
+    ProjectileProvenance,
+    EncounterSuspended,
+    EncounterCompleted
 }
 
 internal static class DamageNetwork
@@ -70,6 +72,14 @@ internal static class DamageNetwork
 
             case DamagePacketType.EncounterCancelled when Main.netMode == NetmodeID.MultiplayerClient:
                 ClientRuntime.OnEncounterCancelled(reader.ReadInt64());
+                break;
+
+            case DamagePacketType.EncounterSuspended when Main.netMode == NetmodeID.MultiplayerClient:
+                ClientRuntime.OnEncounterSuspended(reader.ReadInt64());
+                break;
+
+            case DamagePacketType.EncounterCompleted when Main.netMode == NetmodeID.MultiplayerClient:
+                ClientRuntime.OnEncounterCompleted(reader.ReadInt64());
                 break;
 
             case DamagePacketType.PublicResult when Main.netMode == NetmodeID.MultiplayerClient:
@@ -170,6 +180,20 @@ internal static class DamageNetwork
         packet.Send();
     }
 
+    public static void SendEncounterSuspended(long encounterId, int toClient = -1)
+    {
+        ModPacket packet = NewPacket(DamagePacketType.EncounterSuspended);
+        packet.Write(encounterId);
+        packet.Send(toClient);
+    }
+
+    public static void SendEncounterCompleted(long encounterId)
+    {
+        ModPacket packet = NewPacket(DamagePacketType.EncounterCompleted);
+        packet.Write(encounterId);
+        packet.Send();
+    }
+
     public static void SendProjectileProvenance(Projectile projectile, DamageRootKey root)
     {
         if (Main.netMode != NetmodeID.Server ||
@@ -200,13 +224,13 @@ internal static class DamageNetwork
                 continue;
 
             EncounterPlayerKey recipient = PlayerConnectionRegistry.GetCurrent(i);
-            PlayerResultRow? ownRow = FindPlayerRow(result, recipient);
-            if (ServerConfigService.Current.Recipients == ResultRecipients.Contributors && ownRow is null)
+            long? ownDamage = FindOwnDamage(result, recipient);
+            if (ServerConfigService.Current.Recipients == ResultRecipients.Contributors && !ownDamage.HasValue)
                 continue;
 
             // For a live delivery the active recipient is known to have dealt either the
             // matched amount or zero, even when the public ledger has no row for them.
-            SendResult(result, i, ownRow?.Damage ?? 0);
+            SendResult(result, i, ownDamage ?? 0);
         }
     }
 
@@ -218,15 +242,15 @@ internal static class DamageNetwork
         PlayerConnectionRegistry.Update();
         EncounterPlayerKey recipient = PlayerConnectionRegistry.GetCurrent(toClient);
         List<(PublicResultSnapshot Result, long? OwnDamage)> deliveries = [];
-        foreach (PublicResultSnapshot result in ServerResultHistory.All.Take(10))
+        foreach (PublicResultSnapshot result in ServerResultHistory.All.Take(PresentationSettings.MaximumHistoryCount))
         {
-            PlayerResultRow? ownRow = FindPlayerRow(result, recipient);
-            if (ServerConfigService.Current.Recipients == ResultRecipients.Contributors && ownRow is null)
+            long? ownDamage = FindOwnDamage(result, recipient);
+            if (ServerConfigService.Current.Recipients == ResultRecipients.Contributors && !ownDamage.HasValue)
                 continue;
 
             // A missing exact identity on an old result is deliberately unknown, not zero:
             // the current connection may have joined after that encounter.
-            deliveries.Add((result, ownRow?.Damage));
+            deliveries.Add((result, ownDamage));
         }
 
         int batchId;
@@ -259,10 +283,8 @@ internal static class DamageNetwork
         packet.Send(toClient);
     }
 
-    private static PlayerResultRow? FindPlayerRow(PublicResultSnapshot result, EncounterPlayerKey recipient)
-        => result.Players.FirstOrDefault(row =>
-            row.PlayerIndex == recipient.PlayerIndex &&
-            row.ConnectionGeneration == recipient.Generation);
+    private static long? FindOwnDamage(PublicResultSnapshot result, EncounterPlayerKey recipient)
+        => result.RecipientDamage.TryGetValue(recipient, out long damage) ? damage : null;
 
     private static bool CanServeStateRequest(int whoAmI)
     {

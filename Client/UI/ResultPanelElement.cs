@@ -12,41 +12,48 @@ internal sealed class ResultPanelElement : UIElement
     private const float RankingHeight = 21f;
     private const float SourceHeight = 19f;
     private const float SectionHeadingHeight = 27f;
+    private const float BossRowHeight = 58f;
 
-    private ClientHistoryEntry? _entry;
+    private readonly List<ClientHistoryEntry> _entries = [];
+    private readonly List<CardLayout> _cards = [];
     private PresentationSettings _settings = new();
     private readonly List<RenderLine> _rankingLines = [];
     private readonly List<RenderLine> _sourceLines = [];
     private readonly List<RenderLine> _metricLines = [];
     private readonly List<SourceToggleHitbox> _sourceToggleHitboxes = [];
-    private readonly HashSet<DamageRootKey> _collapsedSourceRoots = [];
-    private DamageRootKey? _expandedProjectileRoot;
-    private bool _showAllSourceRoots;
-    private bool _showRankingSection;
-    private bool _showSourceSection;
+    private readonly HashSet<SourceRootStateKey> _collapsedSourceRoots = [];
+    private readonly Dictionary<CardKey, DamageRootKey> _expandedProjectileRoots = [];
+    private readonly HashSet<CardKey> _showAllSourceRoots = [];
     private int _layoutScreenWidth;
     private int _layoutScreenHeight;
     private float _layoutUiScale;
     private float _contentHeight;
-    private float _sourceSectionOffset;
     private float _scrollOffset;
     private float _maximumScrollOffset;
+    private float _backgroundOpacity = 0.94f;
 
     public float DesiredWidth { get; private set; } = MaximumPanelWidth;
     public float DesiredHeight { get; private set; } = 300f;
     public float Opacity { get; set; } = 1f;
 
-    public void Bind(ClientHistoryEntry entry, PresentationSettings settings)
+    public void Bind(
+        IReadOnlyList<ClientHistoryEntry> entries,
+        PresentationSettings settings,
+        float backgroundOpacity)
     {
-        if (!ReferenceEquals(_entry, entry))
+        bool sameEntries = _entries.Count == entries.Count &&
+            _entries.Zip(entries).All(pair => ReferenceEquals(pair.First, pair.Second));
+        if (!sameEntries)
         {
-            _expandedProjectileRoot = null;
+            _expandedProjectileRoots.Clear();
             _collapsedSourceRoots.Clear();
-            _showAllSourceRoots = false;
+            _showAllSourceRoots.Clear();
             _scrollOffset = 0f;
         }
-        _entry = entry;
+        _entries.Clear();
+        _entries.AddRange(entries);
         _settings = settings.SanitizedClone();
+        _backgroundOpacity = MathHelper.Clamp(backgroundOpacity, 0f, 1f);
         BuildLines();
     }
 
@@ -59,23 +66,27 @@ internal sealed class ResultPanelElement : UIElement
 
             if (toggle.Kind == SourceToggleKind.RootList)
             {
-                _showAllSourceRoots = !_showAllSourceRoots;
+                if (!_showAllSourceRoots.Remove(toggle.Card))
+                    _showAllSourceRoots.Add(toggle.Card);
             }
             else if (toggle.Kind == SourceToggleKind.RootChildren && toggle.RootKey is DamageRootKey rootKey)
             {
-                if (!_collapsedSourceRoots.Remove(rootKey))
+                SourceRootStateKey stateKey = new(toggle.Card, rootKey);
+                if (!_collapsedSourceRoots.Remove(stateKey))
                 {
-                    _collapsedSourceRoots.Add(rootKey);
-                    if (_expandedProjectileRoot == rootKey)
-                        _expandedProjectileRoot = null;
+                    _collapsedSourceRoots.Add(stateKey);
+                    if (_expandedProjectileRoots.TryGetValue(toggle.Card, out DamageRootKey expanded) && expanded == rootKey)
+                        _expandedProjectileRoots.Remove(toggle.Card);
                 }
             }
             else if (toggle.Kind == SourceToggleKind.ProjectileList && toggle.RootKey is DamageRootKey projectileRoot)
             {
-                bool expanding = _expandedProjectileRoot != projectileRoot;
-                _expandedProjectileRoot = expanding
-                    ? projectileRoot
-                    : null;
+                bool expanding = !_expandedProjectileRoots.TryGetValue(toggle.Card, out DamageRootKey expanded) ||
+                    expanded != projectileRoot;
+                if (expanding)
+                    _expandedProjectileRoots[toggle.Card] = projectileRoot;
+                else
+                    _expandedProjectileRoots.Remove(toggle.Card);
             }
             else
             {
@@ -104,7 +115,7 @@ internal sealed class ResultPanelElement : UIElement
     protected override void DrawSelf(SpriteBatch spriteBatch)
     {
         _sourceToggleHitboxes.Clear();
-        if (_entry is null || Opacity <= 0f)
+        if (_entries.Count == 0 || Opacity <= 0f)
             return;
 
         CalculatedStyle dimensions = GetDimensions();
@@ -117,69 +128,73 @@ internal sealed class ResultPanelElement : UIElement
         float y = contentTop - _scrollOffset;
         float right = panel.Right - Margin - (_maximumScrollOffset > 0f ? 10f : 0f);
 
-        if (_settings.ShowBossHeader)
+        for (int cardIndex = 0; cardIndex < _cards.Count; cardIndex++)
         {
-            if (IsFullyVisible(y, 70f, contentTop, contentBottom))
-                DrawBossHeader(spriteBatch, x, y, right);
-            y += 70f;
-        }
-
-        foreach (RenderLine line in _metricLines)
-        {
-            if (IsFullyVisible(y, MetricHeight, contentTop, contentBottom))
-                DrawLine(spriteBatch, line, x, right, y, 0.92f);
-            y += MetricHeight;
-        }
-
-        if (_showRankingSection && _rankingLines.Count > 0)
-        {
-            if (IsFullyVisible(y, SectionHeadingHeight, contentTop, contentBottom))
+            CardLayout card = _cards[cardIndex];
+            if (cardIndex > 0)
             {
-                string heading = TrimToWidth(ClientRuntime.Text("UI.Ranking", "Player damage ranking"), Math.Max(0f, right - x), 0.96f);
-                DrawText(spriteBatch, heading, new Vector2(x, y + 2f), new Color(112, 222, 255), 0.96f);
+                DrawCardSeparator(spriteBatch, x, right, y, contentTop, contentBottom);
+                y += 18f;
             }
-            y += SectionHeadingHeight;
-            foreach (RenderLine line in _rankingLines)
-            {
-                if (IsFullyVisible(y, RankingHeight, contentTop, contentBottom))
-                    DrawLine(spriteBatch, line, x, right, y, 0.84f);
-                y += RankingHeight;
-            }
-        }
 
-        if (_showSourceSection && _sourceLines.Count > 0)
-        {
-            if (IsFullyVisible(y, SectionHeadingHeight, contentTop, contentBottom))
+            if (_settings.ShowBossHeader)
             {
-                long localTotal = _entry.PrivateSources.CanonicalTotal;
-                string heading = _entry.PrivateSources.CanonicalTotalKnown
-                    ? ClientRuntime.Text("UI.PersonalBreakdown", "Your damage sources — {0}", FormatDamage(localTotal))
-                    : ClientRuntime.Text("UI.PersonalBreakdownUnknown", "Your damage sources");
-                heading = TrimToWidth(heading, Math.Max(0f, right - x), 0.96f);
-                DrawText(spriteBatch, heading, new Vector2(x, y + 2f), new Color(255, 210, 112), 0.96f);
+                DrawBossHeader(spriteBatch, card.Entry, x, y, right, contentTop, contentBottom);
+                y += BossHeaderHeight(card.Entry);
             }
-            y += SectionHeadingHeight;
-            foreach (RenderLine line in _sourceLines)
+
+            foreach (RenderLine line in card.Metrics)
             {
-                if (IsFullyVisible(y, SourceHeight, contentTop, contentBottom))
+                if (IsFullyVisible(y, MetricHeight, contentTop, contentBottom))
+                    DrawLine(spriteBatch, line, x, right, y, 0.92f);
+                y += MetricHeight;
+            }
+
+            if (card.ShowRanking && card.Ranking.Count > 0)
+            {
+                if (IsFullyVisible(y, SectionHeadingHeight, contentTop, contentBottom))
                 {
-                    RenderLine drawnLine = line;
-                    if (line.ToggleKind != SourceToggleKind.None)
-                    {
-                        float toggleLeft = x + line.Indent * 20f;
-                        Rectangle hitbox = new(
-                            (int)toggleLeft,
-                            (int)y,
-                            Math.Max(1, (int)(right - toggleLeft)),
-                            (int)SourceHeight);
-                        _sourceToggleHitboxes.Add(new SourceToggleHitbox(hitbox, line.ToggleRoot, line.ToggleKind));
-                        if (hitbox.Contains((int)Main.MouseScreen.X, (int)Main.MouseScreen.Y))
-                            drawnLine = line with { Color = new Color(125, 220, 255) };
-                    }
-
-                    DrawLine(spriteBatch, drawnLine, x, right, y, line.Indent == 0 ? 0.82f : 0.76f);
+                    string heading = TrimToWidth(ClientRuntime.Text("UI.Ranking", "Player damage ranking"), Math.Max(0f, right - x), 0.96f);
+                    DrawText(spriteBatch, heading, new Vector2(x, y + 2f), new Color(112, 222, 255), 0.96f);
                 }
-                y += SourceHeight;
+                y += SectionHeadingHeight;
+                foreach (RenderLine line in card.Ranking)
+                {
+                    if (IsFullyVisible(y, RankingHeight, contentTop, contentBottom))
+                        DrawLine(spriteBatch, line, x, right, y, 0.84f);
+                    y += RankingHeight;
+                }
+            }
+
+            if (card.ShowSources && card.Sources.Count > 0)
+            {
+                if (IsFullyVisible(y, SectionHeadingHeight, contentTop, contentBottom))
+                {
+                    long localTotal = card.Entry.PrivateSources.CanonicalTotal;
+                    string heading = card.Entry.PrivateSources.CanonicalTotalKnown
+                        ? ClientRuntime.Text("UI.PersonalBreakdown", "Your damage sources — {0}", FormatDamage(localTotal))
+                        : ClientRuntime.Text("UI.PersonalBreakdownUnknown", "Your damage sources");
+                    heading = TrimToWidth(heading, Math.Max(0f, right - x), 0.96f);
+                    DrawText(spriteBatch, heading, new Vector2(x, y + 2f), new Color(255, 210, 112), 0.96f);
+                }
+                y += SectionHeadingHeight;
+                foreach (RenderLine line in card.Sources)
+                {
+                    if (IsFullyVisible(y, SourceHeight, contentTop, contentBottom))
+                    {
+                        RenderLine drawnLine = line;
+                        if (line.ToggleKind != SourceToggleKind.None)
+                        {
+                            float toggleLeft = x + line.Indent * 20f;
+                            Rectangle hitbox = new((int)toggleLeft, (int)y, Math.Max(1, (int)(right - toggleLeft)), (int)SourceHeight);
+                            _sourceToggleHitboxes.Add(new SourceToggleHitbox(hitbox, card.Key, line.ToggleRoot, line.ToggleKind));
+                            if (hitbox.Contains((int)Main.MouseScreen.X, (int)Main.MouseScreen.Y))
+                                drawnLine = line with { Color = new Color(125, 220, 255) };
+                        }
+                        DrawLine(spriteBatch, drawnLine, x, right, y, line.Indent == 0 ? 0.82f : 0.76f);
+                    }
+                    y += SourceHeight;
+                }
             }
         }
 
@@ -210,8 +225,7 @@ internal sealed class ResultPanelElement : UIElement
         _rankingLines.Clear();
         _sourceLines.Clear();
         _metricLines.Clear();
-        _showRankingSection = false;
-        _showSourceSection = false;
+        _cards.Clear();
         _sourceToggleHitboxes.Clear();
 
         float uiScale = Math.Max(Main.UIScale, 0.5f);
@@ -224,7 +238,7 @@ internal sealed class ResultPanelElement : UIElement
         DesiredWidth = Math.Max(1f, Math.Min(MaximumPanelWidth, uiWidth - 36f));
         float maxHeight = Math.Max(1f, uiHeight - 36f);
 
-        if (_entry is null)
+        if (_entries.Count == 0)
         {
             DesiredHeight = Math.Min(220f, maxHeight);
             _contentHeight = DesiredHeight;
@@ -233,21 +247,40 @@ internal sealed class ResultPanelElement : UIElement
             return;
         }
 
-        if (_expandedProjectileRoot is DamageRootKey expandedKey &&
-            !_entry.PrivateSources.Roots.Any(root => root.Key == expandedKey))
-        {
-            _expandedProjectileRoot = null;
-        }
-        HashSet<DamageRootKey> currentRootKeys = _entry.PrivateSources.Roots.Select(root => root.Key).ToHashSet();
-        _collapsedSourceRoots.RemoveWhere(key => !currentRootKeys.Contains(key));
+        HashSet<CardKey> currentCards = _entries.Select(CardKeyFor).ToHashSet();
+        _showAllSourceRoots.RemoveWhere(key => !currentCards.Contains(key));
+        foreach (CardKey key in _expandedProjectileRoots.Keys.Where(key => !currentCards.Contains(key)).ToArray())
+            _expandedProjectileRoots.Remove(key);
+        _collapsedSourceRoots.RemoveWhere(key => !currentCards.Contains(key.Card));
         if (!_settings.ShowPersonalBreakdown)
         {
-            _expandedProjectileRoot = null;
+            _expandedProjectileRoots.Clear();
             _collapsedSourceRoots.Clear();
-            _showAllSourceRoots = false;
+            _showAllSourceRoots.Clear();
         }
 
-        PublicResultSnapshot result = _entry.Public;
+        foreach (ClientHistoryEntry entry in _entries)
+            _cards.Add(BuildCard(entry));
+
+        _contentHeight = Margin + _cards.Sum(card => card.Height) + Math.Max(0, _cards.Count - 1) * 18f + Margin;
+        DesiredHeight = Math.Max(1f, Math.Min(_contentHeight, maxHeight));
+        _maximumScrollOffset = Math.Max(0f, _contentHeight - DesiredHeight);
+        _scrollOffset = Math.Clamp(_scrollOffset, 0f, _maximumScrollOffset);
+    }
+
+    private CardLayout BuildCard(ClientHistoryEntry entry)
+    {
+        _rankingLines.Clear();
+        _sourceLines.Clear();
+        _metricLines.Clear();
+        CardKey cardKey = CardKeyFor(entry);
+
+        HashSet<DamageRootKey> currentRoots = entry.PrivateSources.Roots.Select(root => root.Key).ToHashSet();
+        if (_expandedProjectileRoots.TryGetValue(cardKey, out DamageRootKey expanded) && !currentRoots.Contains(expanded))
+            _expandedProjectileRoots.Remove(cardKey);
+        _collapsedSourceRoots.RemoveWhere(key => key.Card == cardKey && !currentRoots.Contains(key.Root));
+
+        PublicResultSnapshot result = entry.Public;
         if (_settings.ShowTeamTotal)
             _metricLines.Add(new RenderLine(ClientRuntime.Text("UI.TeamTotal", "Team total damage"), FormatDamage(result.TeamDamage), 0, Color.White));
         if (_settings.ShowBossBodyDamage)
@@ -263,22 +296,25 @@ internal sealed class ResultPanelElement : UIElement
         if (_settings.ShowRanking)
             BuildRanking(result, 4096);
         if (_settings.ShowPersonalBreakdown)
-            BuildSources(_entry.PrivateSources, 4096);
+            BuildSources(entry.PrivateSources, 4096, cardKey);
 
-        _showRankingSection = _rankingLines.Count > 0;
-        _showSourceSection = _sourceLines.Count > 0;
+        bool showRanking = _rankingLines.Count > 0;
+        bool showSources = _sourceLines.Count > 0;
+        float height = (_settings.ShowBossHeader ? BossHeaderHeight(entry) : 0f) + _metricLines.Count * MetricHeight;
+        if (showRanking)
+            height += SectionHeadingHeight + _rankingLines.Count * RankingHeight;
+        if (showSources)
+            height += SectionHeadingHeight + _sourceLines.Count * SourceHeight;
 
-        float cursor = Margin + (_settings.ShowBossHeader ? 70f : 0f) + _metricLines.Count * MetricHeight;
-        if (_showRankingSection)
-            cursor += SectionHeadingHeight + _rankingLines.Count * RankingHeight;
-        _sourceSectionOffset = Math.Max(0f, cursor - Margin);
-        if (_showSourceSection)
-            cursor += SectionHeadingHeight + _sourceLines.Count * SourceHeight;
-
-        _contentHeight = cursor + Margin;
-        DesiredHeight = Math.Max(1f, Math.Min(_contentHeight, maxHeight));
-        _maximumScrollOffset = Math.Max(0f, _contentHeight - DesiredHeight);
-        _scrollOffset = Math.Clamp(_scrollOffset, 0f, _maximumScrollOffset);
+        return new CardLayout(
+            cardKey,
+            entry,
+            _metricLines.ToList(),
+            _rankingLines.ToList(),
+            _sourceLines.ToList(),
+            showRanking,
+            showSources,
+            height);
     }
 
     private void BuildRanking(PublicResultSnapshot result, int maxLines)
@@ -321,7 +357,7 @@ internal sealed class ResultPanelElement : UIElement
         }
     }
 
-    private void BuildSources(SourceTreeSnapshot tree, int maxLines)
+    private void BuildSources(SourceTreeSnapshot tree, int maxLines, CardKey cardKey)
     {
         if (maxLines <= 0)
             return;
@@ -345,25 +381,27 @@ internal sealed class ResultPanelElement : UIElement
             return;
         }
 
-        if (_expandedProjectileRoot is DamageRootKey expandedKey &&
+        if (_expandedProjectileRoots.TryGetValue(cardKey, out DamageRootKey expandedKey) &&
             roots.All(root => root.Key != expandedKey))
-            _expandedProjectileRoot = null;
+            _expandedProjectileRoots.Remove(cardKey);
 
         int configuredRootCount = Math.Min(_settings.SourceRootRows, roots.Count);
         bool hasAdditionalRoots = roots.Count > configuredRootCount;
         if (!hasAdditionalRoots)
-            _showAllSourceRoots = false;
+            _showAllSourceRoots.Remove(cardKey);
 
-        List<SourceBlock> candidates = (_showAllSourceRoots ? roots : roots.Take(configuredRootCount))
+        bool showAllSourceRoots = _showAllSourceRoots.Contains(cardKey);
+
+        List<SourceBlock> candidates = (showAllSourceRoots ? roots : roots.Take(configuredRootCount))
             .Select(CreateSourceBlock)
             .ToList();
-        if (!_showAllSourceRoots && _expandedProjectileRoot is DamageRootKey hiddenExpandedRoot &&
+        if (!showAllSourceRoots && _expandedProjectileRoots.TryGetValue(cardKey, out DamageRootKey hiddenExpandedRoot) &&
             candidates.All(block => block.Root.Key != hiddenExpandedRoot))
         {
-            _expandedProjectileRoot = null;
+            _expandedProjectileRoots.Remove(cardKey);
         }
 
-        int rootListToggleReserve = _showAllSourceRoots && hasAdditionalRoots && maxLines > 1 ? 1 : 0;
+        int rootListToggleReserve = showAllSourceRoots && hasAdditionalRoots && maxLines > 1 ? 1 : 0;
         int sourceContentLineLimit = maxLines - rootListToggleReserve;
         List<SourceBlock> included = [];
         int mandatoryLineCount = 0;
@@ -371,7 +409,7 @@ internal sealed class ResultPanelElement : UIElement
 
         foreach (SourceBlock block in candidates)
         {
-            bool collapsed = _collapsedSourceRoots.Contains(block.Root.Key);
+            bool collapsed = _collapsedSourceRoots.Contains(new SourceRootStateKey(cardKey, block.Root.Key));
             int required = 1 + (collapsed || block.ItemBody is null ? 0 : 1);
             if (mandatoryLineCount + required + protectedDetailLines > sourceContentLineLimit)
                 break;
@@ -390,20 +428,22 @@ internal sealed class ResultPanelElement : UIElement
         {
             // A one-line viewport should still show the highest source and its value,
             // never just a generic "more rows" notice.
-            AddRootLine(roots[0], tree.CanonicalTotal);
+            AddRootLine(roots[0], tree.CanonicalTotal, cardKey);
             return;
         }
 
         HashSet<DamageRootKey> includedKeys = included.Select(block => block.Root.Key).ToHashSet();
         List<SourceRootSnapshot> omittedRoots = roots.Where(root => !includedKeys.Contains(root.Key)).ToList();
         int remainingLines = sourceContentLineLimit - mandatoryLineCount;
-        int otherRootLines = !_showAllSourceRoots && omittedRoots.Count > 0 && remainingLines > protectedDetailLines ? 1 : 0;
+        int otherRootLines = !showAllSourceRoots && omittedRoots.Count > 0 && remainingLines > protectedDetailLines ? 1 : 0;
         int projectileLineBudget = Math.Max(0, remainingLines - otherRootLines);
 
         int[] projectileAllocations = new int[included.Count];
-        int[] desiredProjectileLines = included.Select(GetDesiredProjectileLineCount).ToArray();
+        int[] desiredProjectileLines = included.Select(block => GetDesiredProjectileLineCount(block, cardKey)).ToArray();
 
-        int expandedIndex = included.FindIndex(block => _expandedProjectileRoot == block.Root.Key);
+        int expandedIndex = _expandedProjectileRoots.TryGetValue(cardKey, out DamageRootKey expandedRoot)
+            ? included.FindIndex(block => expandedRoot == block.Root.Key)
+            : -1;
         if (expandedIndex >= 0 && projectileLineBudget > 0)
         {
             int expandedAllocation = Math.Min(desiredProjectileLines[expandedIndex], projectileLineBudget);
@@ -443,14 +483,14 @@ internal sealed class ResultPanelElement : UIElement
         for (int i = 0; i < included.Count; i++)
         {
             SourceBlock block = included[i];
-            bool collapsed = _collapsedSourceRoots.Contains(block.Root.Key);
+            bool collapsed = _collapsedSourceRoots.Contains(new SourceRootStateKey(cardKey, block.Root.Key));
             bool hasChildren = block.ItemBody is not null || block.Projectiles.Count > 0;
-            AddRootLine(block.Root, tree.CanonicalTotal, hasChildren, collapsed);
+            AddRootLine(block.Root, tree.CanonicalTotal, cardKey, hasChildren, collapsed);
             if (collapsed)
                 continue;
             if (block.ItemBody is not null)
                 AddLeafLine(block.ItemBody, block.Root.Damage);
-            AddProjectileLines(block, projectileAllocations[i]);
+            AddProjectileLines(block, projectileAllocations[i], cardKey);
         }
 
         if (otherRootLines > 0)
@@ -464,7 +504,7 @@ internal sealed class ResultPanelElement : UIElement
                 SourceToggleKind.RootList));
         }
 
-        if (_showAllSourceRoots && hasAdditionalRoots && _sourceLines.Count < maxLines)
+        if (showAllSourceRoots && hasAdditionalRoots && _sourceLines.Count < maxLines)
         {
             string label = omittedRoots.Count > 0
                 ? ClientRuntime.Text("UI.CollapseSourcesClipped", "▼ Collapse source list ({0} sources do not fit)", omittedRoots.Count)
@@ -499,11 +539,11 @@ internal sealed class ResultPanelElement : UIElement
         return new SourceBlock(root, itemBody, projectiles);
     }
 
-    private int GetDesiredProjectileLineCount(SourceBlock block)
+    private int GetDesiredProjectileLineCount(SourceBlock block, CardKey cardKey)
     {
-        if (_collapsedSourceRoots.Contains(block.Root.Key) || block.Projectiles.Count == 0)
+        if (_collapsedSourceRoots.Contains(new SourceRootStateKey(cardKey, block.Root.Key)) || block.Projectiles.Count == 0)
             return 0;
-        if (_expandedProjectileRoot == block.Root.Key)
+        if (_expandedProjectileRoots.TryGetValue(cardKey, out DamageRootKey expanded) && expanded == block.Root.Key)
             return block.Projectiles.Count + 1;
         if (block.Projectiles.Count == 1)
             return 1;
@@ -513,7 +553,12 @@ internal sealed class ResultPanelElement : UIElement
         return individuals + (individuals < block.Projectiles.Count ? 1 : 0);
     }
 
-    private void AddRootLine(SourceRootSnapshot root, long canonicalTotal, bool hasChildren = false, bool collapsed = false)
+    private void AddRootLine(
+        SourceRootSnapshot root,
+        long canonicalTotal,
+        CardKey cardKey,
+        bool hasChildren = false,
+        bool collapsed = false)
     {
         string name = ResolveRootName(root.Key);
         SourceToggleKind toggleKind = SourceToggleKind.None;
@@ -543,7 +588,7 @@ internal sealed class ResultPanelElement : UIElement
             new Color(205, 215, 230)));
     }
 
-    private void AddProjectileLines(SourceBlock block, int allocatedLines)
+    private void AddProjectileLines(SourceBlock block, int allocatedLines, CardKey cardKey)
     {
         if (allocatedLines <= 0 || block.Projectiles.Count == 0)
             return;
@@ -554,7 +599,7 @@ internal sealed class ResultPanelElement : UIElement
             return;
         }
 
-        if (_expandedProjectileRoot == block.Root.Key)
+        if (_expandedProjectileRoots.TryGetValue(cardKey, out DamageRootKey expanded) && expanded == block.Root.Key)
         {
             int expandedIndividualCount = Math.Min(block.Projectiles.Count, Math.Max(0, allocatedLines - 1));
             for (int i = 0; i < expandedIndividualCount; i++)
@@ -597,37 +642,80 @@ internal sealed class ResultPanelElement : UIElement
         }
     }
 
-    private void DrawBossHeader(SpriteBatch spriteBatch, float x, float y, float right)
+    private static float BossHeaderHeight(ClientHistoryEntry entry)
+        => BossRowHeight * Math.Max(1, entry.Public.Bosses.Count);
+
+    private void DrawBossHeader(
+        SpriteBatch spriteBatch,
+        ClientHistoryEntry entry,
+        float x,
+        float y,
+        float right,
+        float contentTop,
+        float contentBottom)
     {
-        if (_entry is null)
-            return;
+        PublicResultSnapshot result = entry.Public;
+        IReadOnlyList<BossPresentation> bosses = result.Bosses.Count == 0
+            ? [new BossPresentation { Name = ClientRuntime.Text("UI.UnknownBoss", "Unknown boss"), Outcome = result.Outcome }]
+            : result.Bosses;
 
-        PublicResultSnapshot result = _entry.Public;
-        BossPresentation? primary = result.Bosses.FirstOrDefault();
-        bool drawPortrait = primary is not null && right - x >= 220f;
-        if (drawPortrait)
-            DrawNpcPortrait(spriteBatch, primary!.PortraitNpcType, new Rectangle((int)x, (int)y, 56, 56));
+        foreach (BossPresentation boss in bosses)
+        {
+            if (IsFullyVisible(y, BossRowHeight, contentTop, contentBottom))
+            {
+                bool drawPortrait = boss.PortraitNpcType > NPCID.None && right - x >= 220f;
+                if (drawPortrait)
+                    DrawNpcPortrait(spriteBatch, boss.PortraitNpcType, new Rectangle((int)x, (int)y + 3, 48, 48));
 
-        float textX = drawPortrait ? x + 72f : x;
-        string bossName = result.Bosses.Count == 0
-            ? ClientRuntime.Text("UI.UnknownBoss", "Unknown boss")
-            : string.Join(" + ", result.Bosses.Select(ClientRuntime.ResolveBossName));
-        string outcome = ClientRuntime.Text($"Outcome.{result.Outcome}", result.Outcome.ToString());
+                float textX = drawPortrait ? x + 60f : x;
+                string bossName = ClientRuntime.ResolveBossName(boss);
+                string outcome = ClientRuntime.Text($"Outcome.{boss.Outcome}", boss.Outcome.ToString());
+                DrawText(spriteBatch, TrimToWidth(bossName, Math.Max(0f, right - textX), 0.98f), new Vector2(textX, y + 2f), Color.White, 0.98f);
 
-        DrawText(spriteBatch, TrimToWidth(bossName, Math.Max(0f, right - textX - 32f), 1.05f), new Vector2(textX, y + 5f), Color.White, 1.05f);
-        DrawText(spriteBatch, TrimToWidth(outcome, Math.Max(0f, right - textX), 0.9f), new Vector2(textX, y + 34f), OutcomeColor(result.Outcome), 0.9f);
+                string damage = _settings.ShowBossBodyDamage
+                    ? ClientRuntime.Text(
+                        "UI.BossBodyRow",
+                        "Body {0} ({1})",
+                        FormatDamage(boss.BodyDamage),
+                        Percent(boss.BodyDamage, result.TeamDamage))
+                    : string.Empty;
+                float damageWidth = Measure(damage, 0.8f);
+                float outcomeWidth = Math.Max(0f, right - textX - (damageWidth > 0f ? damageWidth + 18f : 0f));
+                DrawText(spriteBatch, TrimToWidth(outcome, outcomeWidth, 0.82f), new Vector2(textX, y + 29f), OutcomeColor(boss.Outcome), 0.82f);
+                if (!string.IsNullOrEmpty(damage))
+                    DrawText(spriteBatch, TrimToWidth(damage, Math.Max(0f, right - textX), 0.8f), new Vector2(right - Math.Min(damageWidth, right - textX), y + 29f), new Color(255, 180, 125), 0.8f);
+            }
+
+            y += BossRowHeight;
+        }
     }
 
     private void DrawPanel(SpriteBatch spriteBatch, Rectangle panel)
     {
         Texture2D pixel = TextureAssets.MagicPixel.Value;
-        Color background = new Color(15, 22, 34) * (0.94f * Opacity);
+        Color background = new Color(15, 22, 34) * (_backgroundOpacity * Opacity);
         Color border = new Color(78, 144, 190) * Opacity;
         spriteBatch.Draw(pixel, panel, background);
         spriteBatch.Draw(pixel, new Rectangle(panel.X, panel.Y, panel.Width, 2), border);
         spriteBatch.Draw(pixel, new Rectangle(panel.X, panel.Bottom - 2, panel.Width, 2), border);
         spriteBatch.Draw(pixel, new Rectangle(panel.X, panel.Y, 2, panel.Height), border);
         spriteBatch.Draw(pixel, new Rectangle(panel.Right - 2, panel.Y, 2, panel.Height), border);
+    }
+
+    private void DrawCardSeparator(
+        SpriteBatch spriteBatch,
+        float x,
+        float right,
+        float y,
+        float contentTop,
+        float contentBottom)
+    {
+        if (!IsFullyVisible(y + 8f, 2f, contentTop, contentBottom))
+            return;
+        spriteBatch.Draw(
+            TextureAssets.MagicPixel.Value,
+            new Rectangle((int)x, (int)(y + 8f), Math.Max(1, (int)(right - x)), 2),
+            new Color(55, 92, 120) * Opacity);
     }
 
     private void DrawScrollBar(SpriteBatch spriteBatch, Rectangle panel)
@@ -747,8 +835,26 @@ internal sealed class ResultPanelElement : UIElement
         EncounterOutcome.Victory => new Color(128, 255, 160),
         EncounterOutcome.Defeat => new Color(255, 125, 125),
         EncounterOutcome.Escaped => new Color(255, 205, 120),
+        EncounterOutcome.Mixed => new Color(195, 180, 255),
         _ => new Color(190, 205, 225)
     };
+
+    private static CardKey CardKeyFor(ClientHistoryEntry entry)
+        => new(entry.Public.EncounterId, entry.Public.Bosses.FirstOrDefault()?.Key ?? string.Empty);
+
+    private sealed record CardLayout(
+        CardKey Key,
+        ClientHistoryEntry Entry,
+        List<RenderLine> Metrics,
+        List<RenderLine> Ranking,
+        List<RenderLine> Sources,
+        bool ShowRanking,
+        bool ShowSources,
+        float Height);
+
+    private readonly record struct CardKey(long EncounterId, string BossKey);
+
+    private readonly record struct SourceRootStateKey(CardKey Card, DamageRootKey Root);
 
     private sealed record SourceBlock(
         SourceRootSnapshot Root,
@@ -765,6 +871,7 @@ internal sealed class ResultPanelElement : UIElement
 
     private readonly record struct SourceToggleHitbox(
         Rectangle Bounds,
+        CardKey Card,
         DamageRootKey? RootKey,
         SourceToggleKind Kind);
 

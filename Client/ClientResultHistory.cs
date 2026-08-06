@@ -20,15 +20,16 @@ internal static class ClientResultHistory
 
     public static void Add(ClientHistoryEntry entry, int capacity)
     {
-        EntriesInternal.RemoveAll(existing => existing.Public.EncounterId == entry.Public.EncounterId);
+        ResultKey key = KeyOf(entry.Public);
+        EntriesInternal.RemoveAll(existing => KeyOf(existing.Public) == key);
         EntriesInternal.Insert(0, entry);
         Trim(capacity);
     }
 
     public static void ReplacePublicHistory(IEnumerable<ResultDelivery> deliveries, int capacity)
     {
-        Dictionary<long, SourceTreeSnapshot> privateById = EntriesInternal.ToDictionary(
-            entry => entry.Public.EncounterId,
+        Dictionary<ResultKey, SourceTreeSnapshot> privateById = EntriesInternal.ToDictionary(
+            entry => KeyOf(entry.Public),
             entry => entry.PrivateSources);
 
         EntriesInternal.Clear();
@@ -38,7 +39,7 @@ internal static class ClientResultHistory
             EntriesInternal.Add(new ClientHistoryEntry
             {
                 Public = snapshot,
-                PrivateSources = privateById.TryGetValue(snapshot.EncounterId, out SourceTreeSnapshot? sources)
+                PrivateSources = privateById.TryGetValue(KeyOf(snapshot), out SourceTreeSnapshot? sources)
                     ? sources
                     : SourceTreeSnapshot.Unavailable(delivery.OwnDamage)
             });
@@ -46,8 +47,8 @@ internal static class ClientResultHistory
         Trim(capacity);
     }
 
-    public static ClientHistoryEntry? GetOneBased(int index)
-        => index >= 1 && index <= EntriesInternal.Count ? EntriesInternal[index - 1] : null;
+    public static ClientHistoryEntry? GetZeroBased(int index)
+        => index >= 0 && index < EntriesInternal.Count ? EntriesInternal[index] : null;
 
     public static void Trim(int capacity)
     {
@@ -55,4 +56,9 @@ internal static class ClientResultHistory
         if (EntriesInternal.Count > capacity)
             EntriesInternal.RemoveRange(capacity, EntriesInternal.Count - capacity);
     }
+
+    private static ResultKey KeyOf(PublicResultSnapshot result)
+        => new(result.EncounterId, result.Bosses.FirstOrDefault()?.Key ?? string.Empty);
+
+    private readonly record struct ResultKey(long EncounterId, string BossKey);
 }

@@ -14,6 +14,7 @@ public enum ResultRecipients
 public sealed class BossOverrideConfig
 {
     public string BossKey { get; set; } = string.Empty;
+    public string EncounterGroupKey { get; set; } = string.Empty;
     public string NameLocalizationKey { get; set; } = string.Empty;
     public string NameOverride { get; set; } = string.Empty;
     public string PortraitNpcType { get; set; } = string.Empty;
@@ -24,11 +25,12 @@ public sealed class BossOverrideConfig
     public List<string> KeepAliveNpcTypes { get; set; } = [];
     public List<string> FinalNpcTypes { get; set; } = [];
     public bool? FinishOnBodyDeathWhenNoParticipants { get; set; }
+    public bool? ContinueAfterPartyWipe { get; set; }
 }
 
 public sealed class DamageServerConfig
 {
-    public int SchemaVersion { get; set; } = 1;
+    public int SchemaVersion { get; set; } = 2;
     public PresentationSettings Presentation { get; set; } = new();
     public ResultRecipients Recipients { get; set; } = ResultRecipients.AllActivePlayers;
     public int TransitionSyncGraceTicks { get; set; } = 2;

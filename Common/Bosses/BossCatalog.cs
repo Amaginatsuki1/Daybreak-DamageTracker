@@ -5,6 +5,7 @@ namespace DaybreakDamageTracker.Common.Bosses;
 internal sealed class BossDescriptor
 {
     public string Key { get; set; } = string.Empty;
+    public string EncounterGroupKey { get; set; } = string.Empty;
     public string DisplayNameLocalizationKey { get; set; } = string.Empty;
     public int DisplayNameNpcType { get; set; } = -1;
     public string DisplayName { get; set; } = string.Empty;
@@ -15,10 +16,12 @@ internal sealed class BossDescriptor
     public HashSet<int> ExcludedBodyNpcTypes { get; set; } = [];
     public Func<bool>? Downed { get; set; }
     public bool FinishOnBodyDeathWhenNoParticipants { get; set; }
+    public bool ContinueAfterPartyWipe { get; set; }
 
     public BossDescriptor Clone() => new()
     {
         Key = Key,
+        EncounterGroupKey = EncounterGroupKey,
         DisplayNameLocalizationKey = DisplayNameLocalizationKey,
         DisplayNameNpcType = DisplayNameNpcType,
         DisplayName = DisplayName,
@@ -28,7 +31,8 @@ internal sealed class BossDescriptor
         FinalNpcTypes = [.. FinalNpcTypes],
         ExcludedBodyNpcTypes = [.. ExcludedBodyNpcTypes],
         Downed = Downed,
-        FinishOnBodyDeathWhenNoParticipants = FinishOnBodyDeathWhenNoParticipants
+        FinishOnBodyDeathWhenNoParticipants = FinishOnBodyDeathWhenNoParticipants,
+        ContinueAfterPartyWipe = ContinueAfterPartyWipe
     };
 }
 
@@ -113,6 +117,7 @@ internal static class BossCatalog
             {
                 Index = index++,
                 BossKey = config.BossKey?.Trim() ?? string.Empty,
+                EncounterGroupKey = config.EncounterGroupKey?.Trim() ?? string.Empty,
                 NameLocalizationKey = config.NameLocalizationKey?.Trim() ?? string.Empty,
                 NameOverride = config.NameOverride?.Trim() ?? string.Empty,
                 PortraitNpcType = ResolveSingle(config.PortraitNpcType),
@@ -122,7 +127,8 @@ internal static class BossCatalog
                 BarrierNpcTypes = ResolveMany(config.BarrierNpcTypes),
                 KeepAliveNpcTypes = ResolveMany(config.KeepAliveNpcTypes),
                 FinalNpcTypes = ResolveMany(config.FinalNpcTypes),
-                FinishOnBodyDeathWhenNoParticipants = config.FinishOnBodyDeathWhenNoParticipants
+                FinishOnBodyDeathWhenNoParticipants = config.FinishOnBodyDeathWhenNoParticipants,
+                ContinueAfterPartyWipe = config.ContinueAfterPartyWipe
             };
 
             if (!string.IsNullOrWhiteSpace(runtime.BossKey) || runtime.TriggerNpcTypes.Count > 0)
@@ -177,6 +183,7 @@ internal static class BossCatalog
                 found.TryAdd(key, new BossDescriptor
                 {
                     Key = key,
+                    EncounterGroupKey = key,
                     DisplayNameLocalizationKey = Lang.GetNPCName(npc.type).Key,
                     DisplayNameNpcType = npc.type,
                     DisplayName = npc.FullName,
@@ -223,9 +230,10 @@ internal static class BossCatalog
         HashSet<int> knownFinalTypes = body.Contains(NPCID.MoonLordCore)
             ? [NPCID.MoonLordCore]
             : [];
-        return new BossDescriptor
+        BossDescriptor descriptor = new()
         {
             Key = entry.Key,
+            EncounterGroupKey = entry.Key,
             DisplayNameLocalizationKey = entry.DisplayNameLocalizationKey,
             DisplayNameNpcType = entry.NpcTypes.FirstOrDefault(portraitNpcType),
             DisplayName = entry.DisplayName,
@@ -240,6 +248,7 @@ internal static class BossCatalog
             // an OnKill-backed final participant window rather than an NPC-free timeout.
             FinishOnBodyDeathWhenNoParticipants = true
         };
+        return descriptor;
     }
 
     private static BossDescriptor BuildOverrideDescriptor(RuntimeOverride runtime, NPC trigger)
@@ -255,9 +264,10 @@ internal static class BossCatalog
             ? [.. body, .. runtime.TriggerNpcTypes, .. runtime.KeepAliveNpcTypes]
             : [.. body, .. runtime.TriggerNpcTypes];
 
-        return new BossDescriptor
+        BossDescriptor descriptor = new()
         {
             Key = string.IsNullOrWhiteSpace(runtime.BossKey) ? $"server-override:{runtime.Index}" : runtime.BossKey,
+            EncounterGroupKey = ResolveEncounterGroupKey(runtime),
             DisplayNameLocalizationKey = !string.IsNullOrWhiteSpace(runtime.NameLocalizationKey)
                 ? runtime.NameLocalizationKey
                 : string.IsNullOrWhiteSpace(runtime.NameOverride) ? Lang.GetNPCName(trigger.type).Key : string.Empty,
@@ -271,12 +281,17 @@ internal static class BossCatalog
             KeepAliveNpcTypes = keepAlive,
             FinalNpcTypes = [.. runtime.FinalNpcTypes],
             ExcludedBodyNpcTypes = [.. runtime.AddNpcTypes, .. runtime.BarrierNpcTypes],
-            FinishOnBodyDeathWhenNoParticipants = runtime.FinishOnBodyDeathWhenNoParticipants ?? true
+            FinishOnBodyDeathWhenNoParticipants = runtime.FinishOnBodyDeathWhenNoParticipants ?? true,
+            ContinueAfterPartyWipe = runtime.ContinueAfterPartyWipe ?? false
         };
+        ApplyGroupLifecycle(descriptor, runtime);
+        return descriptor;
     }
 
     private static void ApplyOverride(BossDescriptor descriptor, RuntimeOverride runtime)
     {
+        if (!string.IsNullOrWhiteSpace(runtime.EncounterGroupKey))
+            descriptor.EncounterGroupKey = runtime.EncounterGroupKey;
         if (!string.IsNullOrWhiteSpace(runtime.NameLocalizationKey))
         {
             descriptor.DisplayNameLocalizationKey = runtime.NameLocalizationKey;
@@ -313,6 +328,35 @@ internal static class BossCatalog
         descriptor.FinalNpcTypes.UnionWith(runtime.FinalNpcTypes);
         if (runtime.FinishOnBodyDeathWhenNoParticipants is bool finish)
             descriptor.FinishOnBodyDeathWhenNoParticipants = finish;
+        if (runtime.ContinueAfterPartyWipe is bool continueAfterWipe)
+            descriptor.ContinueAfterPartyWipe = continueAfterWipe;
+        ApplyGroupLifecycle(descriptor, runtime);
+    }
+
+    private static void ApplyGroupLifecycle(BossDescriptor descriptor, RuntimeOverride runtime)
+    {
+        string groupKey = ResolveEncounterGroupKey(runtime);
+        foreach (RuntimeOverride member in _overrides.Where(candidate =>
+                     ResolveEncounterGroupKey(candidate).Equals(groupKey, StringComparison.Ordinal)))
+        {
+            // A group must know its future controller/wave types before the next member
+            // appears, otherwise a wipe during the NPC-free gap is indistinguishable
+            // from a completed ordinary encounter.
+            descriptor.KeepAliveNpcTypes.UnionWith(member.TriggerNpcTypes);
+            descriptor.KeepAliveNpcTypes.UnionWith(member.BodyNpcTypes);
+            descriptor.KeepAliveNpcTypes.UnionWith(member.KeepAliveNpcTypes);
+            descriptor.FinalNpcTypes.UnionWith(member.FinalNpcTypes);
+            descriptor.ContinueAfterPartyWipe |= member.ContinueAfterPartyWipe ?? false;
+        }
+    }
+
+    private static string ResolveEncounterGroupKey(RuntimeOverride runtime)
+    {
+        if (!string.IsNullOrWhiteSpace(runtime.EncounterGroupKey))
+            return runtime.EncounterGroupKey;
+        return string.IsNullOrWhiteSpace(runtime.BossKey)
+            ? $"server-override:{runtime.Index}"
+            : runtime.BossKey;
     }
 
     private static HashSet<int> ResolveMany(IEnumerable<string>? values)
@@ -361,6 +405,7 @@ internal static class BossCatalog
     {
         public int Index { get; set; }
         public string BossKey { get; set; } = string.Empty;
+        public string EncounterGroupKey { get; set; } = string.Empty;
         public string NameLocalizationKey { get; set; } = string.Empty;
         public string NameOverride { get; set; } = string.Empty;
         public int PortraitNpcType { get; set; } = -1;
@@ -371,6 +416,7 @@ internal static class BossCatalog
         public HashSet<int> KeepAliveNpcTypes { get; set; } = [];
         public HashSet<int> FinalNpcTypes { get; set; } = [];
         public bool? FinishOnBodyDeathWhenNoParticipants { get; set; }
+        public bool? ContinueAfterPartyWipe { get; set; }
 
         public bool ManagesNpcType(int npcType)
             => TriggerNpcTypes.Contains(npcType) ||

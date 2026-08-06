@@ -16,7 +16,7 @@ internal static class ServerResultHistory
 
     public static void Trim(int capacity)
     {
-        capacity = Math.Clamp(capacity, 1, 10);
+        capacity = Math.Clamp(capacity, 1, PresentationSettings.MaximumHistoryCount);
         if (Results.Count > capacity)
             Results.RemoveRange(capacity, Results.Count - capacity);
     }

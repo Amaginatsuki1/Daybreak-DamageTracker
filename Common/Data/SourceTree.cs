@@ -58,6 +58,25 @@ internal sealed class MutableSourceTree
 
     public void Clear() => _roots.Clear();
 
+    public void MergeFrom(MutableSourceTree source)
+    {
+        if (ReferenceEquals(this, source))
+            return;
+
+        foreach ((DamageRootKey root, Dictionary<DamageLeafKey, long> sourceLeaves) in source._roots)
+        {
+            if (!_roots.TryGetValue(root, out Dictionary<DamageLeafKey, long>? leaves))
+                _roots[root] = leaves = [];
+
+            foreach ((DamageLeafKey leaf, long damage) in sourceLeaves)
+            {
+                leaves.TryGetValue(leaf, out long current);
+                leaves[leaf] = checked(current + damage);
+            }
+        }
+        source.Clear();
+    }
+
     public void Add(DamageRootKey root, DamageLeafKey leaf, int damage)
     {
         if (damage <= 0)

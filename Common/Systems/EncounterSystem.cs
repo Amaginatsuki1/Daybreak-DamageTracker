@@ -73,19 +73,19 @@ internal sealed class EncounterSystem : ModSystem
             return;
         }
 
+        ReconcileActiveBosses(activeBosses);
         if (_session is null)
-        {
-            if (activeBosses.Count > 0)
-                Arm(activeBosses);
             return;
-        }
 
-        foreach (BossDescriptor descriptor in activeBosses)
-            _session.Merge(descriptor);
-
-        _session.ObserveEngagedPlayers();
+        EngagementObservation engagement = _session.ObserveEngagedPlayers();
 
         bool participantActive = _session.RefreshParticipantWindow();
+        PublishResolvedBosses();
+        if (_session.AllBossesResolved)
+        {
+            CloseResolvedSession();
+            return;
+        }
 
         if (_session.State == EncounterState.Armed)
         {
@@ -94,10 +94,14 @@ internal sealed class EncounterSystem : ModSystem
             return;
         }
 
+        if (_session.ObservePartyWipe())
+            LogLifecycle("party wipe observed; waiting for the encounter lifecycle to resolve");
+
         if (participantActive)
         {
-            _session.State = EncounterState.Fighting;
-            _session.TransitionStartTick = 0;
+            if (_session.TryRecoverPartyWipe(engagement.LivingPlayerEngaged))
+                LogLifecycle("party wipe continuation recovered after a living player re-engaged");
+            ResumeFightIfNeeded();
             return;
         }
 
@@ -106,48 +110,34 @@ internal sealed class EncounterSystem : ModSystem
         {
             _session.State = EncounterState.Transitioning;
             _session.TransitionStartTick = now;
+            NotifyEncounterSuspended(_session.EncounterId);
+            LogLifecycle("entered an NPC-free transition");
         }
 
         if (now - _session.TransitionStartTick < ServerConfigService.Current.TransitionSyncGraceTicks)
             return;
 
-        if (_session.HasVictorySignal())
-        {
-            Finish(EncounterOutcome.Victory);
-            return;
-        }
-
-        if (_session.AllEncounterPlayersDead())
-        {
-            Finish(EncounterOutcome.Defeat);
-            return;
-        }
-
-        if (_session.HasNoActiveEncounterPlayers())
-        {
-            Finish(EncounterOutcome.Escaped);
-            return;
-        }
-
         int fallbackSeconds = ServerConfigService.Current.GenericDespawnFallbackSeconds;
-        if (fallbackSeconds > 0 && now - _session.TransitionStartTick >= fallbackSeconds * 60L)
-            Finish(EncounterOutcome.Escaped);
+        bool fallbackExpired = fallbackSeconds > 0 &&
+                               now - _session.TransitionStartTick >= fallbackSeconds * 60L;
+        EncounterOutcome? outcome = ResolveInactiveBoundary(
+            foreignEncounterStarted: false,
+            fallbackExpired);
+        if (outcome.HasValue)
+            Finish(outcome.Value);
     }
 
     public static TargetSnapshot PrepareTarget(NPC npc)
     {
         bool eligible = TargetClassifier.IsEligibleHostile(npc);
         if (Main.netMode == NetmodeID.MultiplayerClient)
-            return new TargetSnapshot(eligible, false, npc.type);
+            return new TargetSnapshot(eligible, npc.type, -1);
 
-        if (_session is null)
-        {
-            List<BossDescriptor> activeBosses = BossCatalog.ScanActiveBosses();
-            if (activeBosses.Count > 0)
-                Arm(activeBosses);
-        }
+        ReconcileActiveBosses(BossCatalog.ScanActiveBosses());
+        if (_session?.State == EncounterState.Transitioning && _session.HasActiveParticipantNpc())
+            ResumeFightIfNeeded();
 
-        return new TargetSnapshot(eligible, _session?.IsBossBody(npc) ?? false, npc.type);
+        return _session?.CaptureTarget(eligible, npc) ?? new TargetSnapshot(eligible, npc.type, -1);
     }
 
     public static void RecordPlayerDamage(int playerIndex, TargetSnapshot target, int actualDamage)
@@ -164,15 +154,16 @@ internal sealed class EncounterSystem : ModSystem
         if (_session.State == EncounterState.Armed)
             BeginFight();
 
-        if (_session.State is not (EncounterState.Fighting or EncounterState.Transitioning))
+        if (_session.State != EncounterState.Fighting)
             return;
 
-        _session.RecordPlayerDamage(playerIndex, target, actualDamage);
+        if (_session.RecordPlayerDamage(playerIndex, target, actualDamage))
+            LogLifecycle("merged a non-overlapping reconnect into an existing public ranking row");
     }
 
     public static void RecordUnattributedDamage(TargetSnapshot target, int actualDamage)
     {
-        if (_session?.State is EncounterState.Fighting or EncounterState.Transitioning)
+        if (_session?.State == EncounterState.Fighting)
             _session.RecordUnattributedDamage(target, actualDamage);
     }
 
@@ -204,8 +195,77 @@ internal sealed class EncounterSystem : ModSystem
             return;
 
         DamageNetwork.SendEncounterArmed(_session.EncounterId, _session.BuildBossPresentation(), toClient);
-        if (_session.State is EncounterState.Fighting or EncounterState.Transitioning)
+        if (_session.State == EncounterState.Fighting)
             DamageNetwork.SendEncounterStarted(_session.EncounterId, toClient);
+        else if (_session.State == EncounterState.Transitioning)
+            DamageNetwork.SendEncounterSuspended(_session.EncounterId, toClient);
+    }
+
+    private static void ReconcileActiveBosses(List<BossDescriptor> activeBosses)
+    {
+        if (_session is null)
+        {
+            if (activeBosses.Count > 0)
+                Arm(activeBosses);
+            return;
+        }
+
+        if (activeBosses.Count == 0)
+            return;
+
+        bool currentParticipantActive = _session.HasActiveParticipantNpc();
+        bool relatedBossActive = activeBosses.Any(_session.IsRelated);
+        if (EncounterPolicy.ShouldStartNewEncounter(
+                hasAnyActiveBoss: true,
+                currentParticipantActive,
+                relatedBossActive))
+        {
+            if (_session.State == EncounterState.Armed)
+            {
+                CancelArmedEncounter();
+            }
+            else
+            {
+                _session.ObserveEngagedPlayers();
+                _session.RefreshParticipantWindow();
+                if (_session.ObservePartyWipe())
+                    LogLifecycle("party wipe observed at an unrelated encounter boundary");
+                EncounterOutcome outcome = ResolveInactiveBoundary(
+                    foreignEncounterStarted: true,
+                    genericFallbackExpired: false) ?? EncounterOutcome.Escaped;
+                Finish(outcome);
+            }
+
+            Arm(activeBosses);
+            return;
+        }
+
+        bool changed = false;
+        foreach (BossDescriptor descriptor in activeBosses)
+        {
+            if (_session.Merge(descriptor))
+            {
+                changed = true;
+                LogLifecycle($"added boss={descriptor.Key}, group={descriptor.EncounterGroupKey}");
+            }
+        }
+        if (changed)
+        {
+            if (Main.netMode == NetmodeID.Server)
+                DamageNetwork.SendEncounterArmed(_session.EncounterId, _session.BuildBossPresentation());
+            else
+                ClientRuntime.OnEncounterArmed(_session.EncounterId, _session.BuildBossPresentation());
+        }
+    }
+
+    private static EncounterOutcome? ResolveInactiveBoundary(
+        bool foreignEncounterStarted,
+        bool genericFallbackExpired)
+    {
+        if (_session is null)
+            return null;
+
+        return _session.ResolveInactiveBoundary(foreignEncounterStarted, genericFallbackExpired);
     }
 
     private static void Arm(IEnumerable<BossDescriptor> descriptors)
@@ -213,6 +273,7 @@ internal sealed class EncounterSystem : ModSystem
         _session = new EncounterSession(++_nextEncounterId, descriptors);
         _session.ObserveEngagedPlayers();
         _session.RefreshParticipantWindow();
+        LogLifecycle($"armed bosses=[{string.Join(",", _session.BossKeys)}], groups=[{string.Join(",", _session.EncounterGroupKeys)}]");
         if (Main.netMode == NetmodeID.Server)
             DamageNetwork.SendEncounterArmed(_session.EncounterId, _session.BuildBossPresentation());
         else
@@ -230,6 +291,29 @@ internal sealed class EncounterSystem : ModSystem
             DamageNetwork.SendEncounterStarted(_session.EncounterId);
         else
             ClientRuntime.OnEncounterStarted(_session.EncounterId);
+        LogLifecycle("fight timer started");
+    }
+
+    private static void ResumeFightIfNeeded()
+    {
+        if (_session?.State != EncounterState.Transitioning)
+            return;
+
+        _session.State = EncounterState.Fighting;
+        _session.TransitionStartTick = 0;
+        if (Main.netMode == NetmodeID.Server)
+            DamageNetwork.SendEncounterStarted(_session.EncounterId);
+        else
+            ClientRuntime.OnEncounterStarted(_session.EncounterId);
+        LogLifecycle("resumed from transition");
+    }
+
+    private static void NotifyEncounterSuspended(long encounterId)
+    {
+        if (Main.netMode == NetmodeID.Server)
+            DamageNetwork.SendEncounterSuspended(encounterId);
+        else
+            ClientRuntime.OnEncounterSuspended(encounterId);
     }
 
     private static void CancelArmedEncounter()
@@ -250,19 +334,51 @@ internal sealed class EncounterSystem : ModSystem
         if (_session is null)
             return;
 
-        PublicResultSnapshot result = _session.BuildResult(outcome, (long)Main.GameUpdateCount);
-        ServerResultHistory.Add(result, ServerConfigService.Current.Presentation.HistoryCount);
+        _session.CompleteUnresolved(outcome);
+        PublishResolvedBosses();
+        CloseResolvedSession();
+    }
 
-        if (Main.netMode == NetmodeID.Server)
-            DamageNetwork.SendResultToConfiguredRecipients(result);
-        else
+    private static void PublishResolvedBosses()
+    {
+        if (_session is null)
+            return;
+
+        foreach (PublicResultSnapshot result in _session.DrainResolvedResults((long)Main.GameUpdateCount))
         {
-            EncounterPlayerKey local = PlayerConnectionRegistry.GetCurrent(Main.myPlayer);
-            long ownDamage = result.Players.FirstOrDefault(row =>
-                row.PlayerIndex == local.PlayerIndex && row.ConnectionGeneration == local.Generation)?.Damage ?? 0;
-            ClientRuntime.OnPublicResult(result, ownDamage);
-        }
+            BossPresentation boss = result.Bosses.FirstOrDefault() ?? new BossPresentation();
+            LogLifecycle($"published boss={boss.Key}, outcome={result.Outcome}, teamDamage={result.TeamDamage}, bodyDamage={result.BossBodyDamage}, publicPlayers={result.Players.Count}, durationTicks={result.DurationTicks}, encounterComplete={result.EncounterComplete}");
+            ServerResultHistory.Add(result, PresentationSettings.MaximumHistoryCount);
 
+            if (Main.netMode == NetmodeID.Server)
+            {
+                DamageNetwork.SendResultToConfiguredRecipients(result);
+            }
+            else
+            {
+                EncounterPlayerKey local = PlayerConnectionRegistry.GetCurrent(Main.myPlayer);
+                long ownDamage = result.RecipientDamage.TryGetValue(local, out long damage) ? damage : 0;
+                ClientRuntime.OnPublicResult(result, ownDamage);
+            }
+        }
+    }
+
+    private static void CloseResolvedSession()
+    {
+        if (_session is null)
+            return;
+
+        long encounterId = _session.EncounterId;
         _session = null;
+        if (Main.netMode == NetmodeID.Server)
+            DamageNetwork.SendEncounterCompleted(encounterId);
+        else
+            ClientRuntime.OnEncounterCompleted(encounterId);
+    }
+
+    private static void LogLifecycle(string message)
+    {
+        if (_session is not null)
+            DaybreakDamageTrackerMod.Instance.Logger.Info($"Encounter {_session.EncounterId}: {message}");
     }
 }

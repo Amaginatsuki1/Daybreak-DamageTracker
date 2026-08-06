@@ -8,7 +8,7 @@ internal sealed class DamageResultHudSystem : ModSystem
 {
     private UserInterface? _userInterface;
     private DamageResultUIState? _uiState;
-    private ClientHistoryEntry? _currentEntry;
+    private readonly List<ClientHistoryEntry> _currentEntries = [];
     private bool _automatic;
     private int _remainingTicks;
     private int _fadeTicks;
@@ -20,6 +20,7 @@ internal sealed class DamageResultHudSystem : ModSystem
         _userInterface = new UserInterface();
         _uiState = new DamageResultUIState();
         _uiState.Activate();
+        ClientRuntime.RegisterHud(this);
     }
 
     public void Show(ClientHistoryEntry entry, bool automatic)
@@ -27,35 +28,54 @@ internal sealed class DamageResultHudSystem : ModSystem
         if (_userInterface is null || _uiState is null)
             return;
 
-        _currentEntry = entry;
-        _uiState.Bind(entry, ClientRuntime.Presentation);
+        _currentEntries.Clear();
+        _currentEntries.Add(entry);
+        _uiState.Bind(_currentEntries, ClientRuntime.Presentation, ClientRuntime.PanelBackgroundOpacity);
         _uiState.SetOpacity(1f);
         _automatic = automatic;
-        _remainingTicks = Math.Max(1, (int)Math.Round(ClientRuntime.Presentation.AutoShowSeconds * 60f));
-        _fadeTicks = Math.Max(0, (int)Math.Round(ClientRuntime.Presentation.FadeSeconds * 60f));
+        if (_automatic)
+            ResetAutomaticTimer();
+        else
+        {
+            _remainingTicks = 0;
+            _fadeTicks = 0;
+        }
         _userInterface.SetState(_uiState);
+    }
+
+    public void Append(ClientHistoryEntry entry)
+    {
+        if (_userInterface is null || _uiState is null || !IsVisible)
+            return;
+
+        string bossKey = entry.Public.Bosses.FirstOrDefault()?.Key ?? string.Empty;
+        _currentEntries.RemoveAll(existing =>
+            existing.Public.EncounterId == entry.Public.EncounterId &&
+            (existing.Public.Bosses.FirstOrDefault()?.Key ?? string.Empty).Equals(bossKey, StringComparison.Ordinal));
+        _currentEntries.Add(entry);
+        int capacity = ClientRuntime.HistoryCapacity;
+        if (_currentEntries.Count > capacity)
+            _currentEntries.RemoveRange(0, _currentEntries.Count - capacity);
+        _uiState.Bind(_currentEntries, ClientRuntime.Presentation, ClientRuntime.PanelBackgroundOpacity);
+        _uiState.SetOpacity(1f);
+        if (_automatic)
+            ResetAutomaticTimer();
     }
 
     public void RefreshPresentation()
     {
-        if (!IsVisible || _uiState is null || _currentEntry is null)
+        if (!IsVisible || _uiState is null || _currentEntries.Count == 0)
             return;
 
-        if (_automatic && !ClientRuntime.Presentation.AutoShow)
-        {
-            Hide();
-            return;
-        }
-
-        _uiState.Bind(_currentEntry, ClientRuntime.Presentation);
-        _fadeTicks = Math.Max(0, (int)Math.Round(ClientRuntime.Presentation.FadeSeconds * 60f));
+        _uiState.Bind(_currentEntries, ClientRuntime.Presentation, ClientRuntime.PanelBackgroundOpacity);
+        int maximumTicks = AutomaticDurationTicks();
+        _fadeTicks = AutomaticFadeTicks(maximumTicks);
         if (!_automatic)
         {
             _uiState.SetOpacity(1f);
             return;
         }
 
-        int maximumTicks = Math.Max(1, (int)Math.Round(ClientRuntime.Presentation.AutoShowSeconds * 60f));
         _remainingTicks = Math.Clamp(_remainingTicks, 1, maximumTicks);
         float opacity = _fadeTicks > 0 && _remainingTicks <= _fadeTicks
             ? MathHelper.Clamp(_remainingTicks / (float)_fadeTicks, 0f, 1f)
@@ -63,9 +83,22 @@ internal sealed class DamageResultHudSystem : ModSystem
         _uiState.SetOpacity(opacity);
     }
 
+    public void ApplyLocalPreferences()
+    {
+        int capacity = ClientRuntime.HistoryCapacity;
+        if (_currentEntries.Count > capacity)
+            _currentEntries.RemoveRange(0, _currentEntries.Count - capacity);
+        RefreshPresentation();
+        if (_automatic && IsVisible && _uiState is not null)
+        {
+            ResetAutomaticTimer();
+            _uiState.SetOpacity(1f);
+        }
+    }
+
     public void Hide()
     {
-        _currentEntry = null;
+        _currentEntries.Clear();
         _automatic = false;
         _remainingTicks = 0;
         _fadeTicks = 0;
@@ -77,10 +110,9 @@ internal sealed class DamageResultHudSystem : ModSystem
         if (!IsVisible || _uiState is null)
             return;
 
-        _automatic = false;
-        _remainingTicks = 0;
-        _fadeTicks = 0;
         _uiState.SetOpacity(1f);
+        if (_automatic)
+            ResetAutomaticTimer();
     }
 
     public void ToggleLatest()
@@ -143,8 +175,23 @@ internal sealed class DamageResultHudSystem : ModSystem
 
     public override void Unload()
     {
-        _currentEntry = null;
+        ClientRuntime.UnregisterHud(this);
+        _currentEntries.Clear();
         _userInterface = null;
         _uiState = null;
     }
+
+    private void ResetAutomaticTimer()
+    {
+        _remainingTicks = AutomaticDurationTicks();
+        _fadeTicks = AutomaticFadeTicks(_remainingTicks);
+    }
+
+    private static int AutomaticDurationTicks()
+        => Math.Max(1, ClientRuntime.AutoHideSeconds * 60);
+
+    private static int AutomaticFadeTicks(int durationTicks)
+        => Math.Min(
+            durationTicks,
+            Math.Max(0, (int)Math.Round(ClientRuntime.Presentation.FadeSeconds * 60f)));
 }

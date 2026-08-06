@@ -4,6 +4,7 @@ Mods: {
 			UnknownBoss: Unknown boss
 			TeamTotal: Team total damage
 			BossBodyDamage: Damage to boss body
+			BossBodyRow: Body {0} ({1})
 			Unattributed: Unattributed/server-side damage
 			Duration: Duration
 			Ranking: Player damage ranking
@@ -34,14 +35,42 @@ Mods: {
 			Defeat: Defeat
 			Escaped: Boss escaped
 			Manual: Manually ended
+			Mixed: Mixed outcomes
 		}
 
-		Chat.SavedResult: "[DT] {0} — team {1}, {2}. /dt to reopen"
+		Chat.SavedResult: "{0} | {1} | {2}"
 
 		Commands: {
 			Dt: {
 				Description: Open or close saved damage results.
 				NoHistory: No saved damage result is available.
+				NoHistoryAtIndex: No saved damage result is available through /dt{0}.
+			}
+		}
+
+		Configs: {
+			ClientConfig: {
+				DisplayName: Daybreak DamageTracker
+
+				AutoShowResults: {
+					Label: Automatically show result panel
+					Tooltip: Show a boss result panel automatically when that boss concludes. Chat history and /dt remain available when disabled.
+				}
+
+				HistoryCount: {
+					Label: Saved result count
+					Tooltip: Keep 1 to 10 recent boss results. The latest uses /dt, followed by /dt1 through /dt9 as needed.
+				}
+
+				AutoHideSeconds: {
+					Label: Automatic panel duration
+					Tooltip: Keep an automatically opened result panel visible for 1 to 120 seconds. Interacting with it restarts this timer. Panels opened manually with /dt remain open until closed.
+				}
+
+				PanelBackgroundOpacity: {
+					Label: Panel background opacity
+					Tooltip: Adjust only the dark panel background. Text, portraits, borders, and buttons remain fully visible.
+				}
 			}
 		}
 	}

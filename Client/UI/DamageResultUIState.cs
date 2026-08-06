@@ -17,10 +17,8 @@ internal sealed class DamageResultUIState : UIState
         _panel.IgnoresMouseInteraction = false;
         _panel.OnLeftClick += (_, _) =>
         {
-            if (!_panel.TryToggleSourceTree(Main.MouseScreen))
-                return;
-
-            ApplyPanelLayout();
+            if (_panel.TryToggleSourceTree(Main.MouseScreen))
+                ApplyPanelLayout();
             ModContent.GetInstance<DamageResultHudSystem>().KeepOpenAfterInteraction();
         };
         Append(_panel);
@@ -33,9 +31,12 @@ internal sealed class DamageResultUIState : UIState
         Append(_closeButton);
     }
 
-    public void Bind(ClientHistoryEntry entry, Common.Data.PresentationSettings settings)
+    public void Bind(
+        IReadOnlyList<ClientHistoryEntry> entries,
+        Common.Data.PresentationSettings settings,
+        float backgroundOpacity)
     {
-        _panel.Bind(entry, settings);
+        _panel.Bind(entries, settings, backgroundOpacity);
         ApplyPanelLayout();
     }
 

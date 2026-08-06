@@ -8,6 +8,9 @@
     <RootNamespace>DaybreakDamageTracker</RootNamespace>
     <LangVersion>latest</LangVersion>
   </PropertyGroup>
+  <ItemGroup>
+    <Compile Remove="tests\**\*.cs" />
+  </ItemGroup>
   <Target Name="RequireTModLoaderTargets" BeforeTargets="PrepareForBuild" Condition="!Exists('$(TModLoaderTargets)')">
     <Error Text="tModLoader build targets were not found. Clone into ModSources or pass -p:TModLoaderTargets=&quot;path/to/tMLMod.targets&quot;." />
   </Target>
