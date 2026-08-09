@@ -26,6 +26,7 @@ Useful fields:
   individual weapon/source roots shown before the clickable `Other N sources` aggregate.
   `SourceLeafRows` is the compact number of individual projectile kinds shown under each source
   before `Other N projectiles`. The weapon-body row is separate and does not consume the leaf
+  limit. DoT debuff rows are separate details and do not reduce the configured projectile-kind
   limit. The defaults are `6` roots and `3` projectile kinds.
 - `ChatSummary`; the server retains and can sync up to ten per-boss public results. The legacy server
   `Presentation.HistoryCount` field remains accepted but is sanitized to ten; each client applies its

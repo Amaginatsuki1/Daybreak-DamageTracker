@@ -12,6 +12,7 @@ internal sealed class EncounterSystem : ModSystem
     private static EncounterSession? _session;
     private static long _nextEncounterId;
     private static bool _ignoreBossesUntilClear;
+    private static readonly HashSet<string> ResolvedBossKeysUntilAbsent = new(StringComparer.Ordinal);
 
     public static EncounterState State => _session?.State ?? EncounterState.Idle;
     public static long ActiveEncounterId => _session?.EncounterId ?? 0;
@@ -23,6 +24,7 @@ internal sealed class EncounterSystem : ModSystem
         _session = null;
         _nextEncounterId = 0;
         _ignoreBossesUntilClear = false;
+        ResolvedBossKeysUntilAbsent.Clear();
         DamageTrackingGlobalNpc.ResetSpawnSerials();
         PlayerConnectionRegistry.Reset();
         ServerResultHistory.Clear();
@@ -45,6 +47,7 @@ internal sealed class EncounterSystem : ModSystem
     public override void OnWorldUnload()
     {
         _session = null;
+        ResolvedBossKeysUntilAbsent.Clear();
         PlayerConnectionRegistry.Reset();
         ServerResultHistory.Clear();
         DamageNetwork.Reset();
@@ -55,6 +58,7 @@ internal sealed class EncounterSystem : ModSystem
     public override void Unload()
     {
         _session = null;
+        ResolvedBossKeysUntilAbsent.Clear();
         BossCatalog.Clear();
     }
 
@@ -167,6 +171,39 @@ internal sealed class EncounterSystem : ModSystem
             _session.RecordUnattributedDamage(target, actualDamage);
     }
 
+    internal static DotDamageOwner? CaptureDotOwner(int playerIndex)
+    {
+        if (playerIndex < 0 || playerIndex >= Main.maxPlayers || !Main.player[playerIndex].active)
+            return null;
+
+        return new DotDamageOwner(
+            PlayerConnectionRegistry.GetCurrent(playerIndex),
+            Main.player[playerIndex].name);
+    }
+
+    internal static bool RecordDotDamage(DotDamageOwner? owner, TargetSnapshot target, int actualDamage)
+    {
+        if (Main.netMode == NetmodeID.MultiplayerClient || !target.Eligible || actualDamage <= 0 || _session is null)
+            return false;
+
+        if (_session.State == EncounterState.Armed)
+            BeginFight();
+        if (_session.State != EncounterState.Fighting)
+            return false;
+
+        if (owner.HasValue)
+        {
+            if (_session.RecordPlayerDamage(owner.Value.Key, owner.Value.PlayerName, target, actualDamage))
+                LogLifecycle("merged a reconnect while applying owned damage over time");
+        }
+        else
+        {
+            _session.RecordUnattributedDamage(target, actualDamage);
+        }
+
+        return true;
+    }
+
     public static void MarkNpcKilled(NPC npc)
     {
         if (Main.netMode != NetmodeID.MultiplayerClient)
@@ -203,6 +240,15 @@ internal sealed class EncounterSystem : ModSystem
 
     private static void ReconcileActiveBosses(List<BossDescriptor> activeBosses)
     {
+        // A killed Boss can leave a controller or dying body visible to Boss Checklist
+        // for another scan. Do not turn that residue into a second result. Once the key
+        // has been completely absent for an authoritative scan, the same Boss may be
+        // summoned again even while a simultaneous sibling is still fighting.
+        EncounterPolicy.ReleaseAbsentResolvedBossKeys(
+            ResolvedBossKeysUntilAbsent,
+            activeBosses.Select(descriptor => descriptor.Key));
+        activeBosses.RemoveAll(descriptor => ResolvedBossKeysUntilAbsent.Contains(descriptor.Key));
+
         if (_session is null)
         {
             if (activeBosses.Count > 0)
@@ -347,6 +393,8 @@ internal sealed class EncounterSystem : ModSystem
         foreach (PublicResultSnapshot result in _session.DrainResolvedResults((long)Main.GameUpdateCount))
         {
             BossPresentation boss = result.Bosses.FirstOrDefault() ?? new BossPresentation();
+            if (!string.IsNullOrEmpty(boss.Key))
+                ResolvedBossKeysUntilAbsent.Add(boss.Key);
             LogLifecycle($"published boss={boss.Key}, outcome={result.Outcome}, teamDamage={result.TeamDamage}, bodyDamage={result.BossBodyDamage}, publicPlayers={result.Players.Count}, durationTicks={result.DurationTicks}, encounterComplete={result.EncounterComplete}");
             ServerResultHistory.Add(result, PresentationSettings.MaximumHistoryCount);
 

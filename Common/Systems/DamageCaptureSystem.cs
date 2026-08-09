@@ -7,6 +7,9 @@ internal sealed class DamageCaptureSystem : ModSystem
     [ThreadStatic]
     private static PendingDamagePacket _pendingDamage;
 
+    [ThreadStatic]
+    private static PendingBuffPacket _pendingBuff;
+
     public override void Load()
     {
         On_MessageBuffer.GetData += HookGetData;
@@ -18,11 +21,22 @@ internal sealed class DamageCaptureSystem : ModSystem
         On_MessageBuffer.GetData -= HookGetData;
         On_NPC.StrikeNPC_HitInfo_bool_bool -= HookStrikeNpc;
         _pendingDamage = default;
+        _pendingBuff = default;
     }
 
     public override bool HijackGetData(ref byte messageType, ref BinaryReader reader, int playerNumber)
     {
-        if (Main.netMode != NetmodeID.Server || messageType != MessageID.DamageNPC)
+        if (Main.netMode != NetmodeID.Server)
+            return false;
+
+        if (messageType == MessageID.AddNPCBuff)
+        {
+            if (playerNumber >= 0 && playerNumber < Main.maxPlayers)
+                _pendingBuff = new PendingBuffPacket(true, playerNumber);
+            return false;
+        }
+
+        if (messageType != MessageID.DamageNPC)
             return false;
 
         long position = reader.BaseStream.Position;
@@ -55,6 +69,7 @@ internal sealed class DamageCaptureSystem : ModSystem
         out int messageType)
     {
         _pendingDamage = default;
+        _pendingBuff = default;
         try
         {
             orig(self, start, length, out messageType);
@@ -62,7 +77,14 @@ internal sealed class DamageCaptureSystem : ModSystem
         finally
         {
             _pendingDamage = default;
+            _pendingBuff = default;
         }
+    }
+
+    internal static bool TryGetPendingBuffPlayer(out int playerIndex)
+    {
+        playerIndex = _pendingBuff.PlayerIndex;
+        return Main.netMode == NetmodeID.Server && _pendingBuff.Active;
     }
 
     private static int HookStrikeNpc(
@@ -101,4 +123,5 @@ internal sealed class DamageCaptureSystem : ModSystem
     }
 
     private readonly record struct PendingDamagePacket(bool Active, int PlayerIndex, int NpcIndex, int PacketDamage);
+    private readonly record struct PendingBuffPacket(bool Active, int PlayerIndex);
 }

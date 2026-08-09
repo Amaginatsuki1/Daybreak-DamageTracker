@@ -16,6 +16,8 @@ internal readonly record struct UnresolvedBossFacts(
     bool ContinueAfterPartyWipe,
     bool HasNoActivePlayers,
     bool LastHadLivingEngagedPlayer,
+    bool ObservedNonKillDisappearance,
+    bool AllowDisappearanceBoundary,
     bool ForeignEncounterStarted,
     bool GenericFallbackExpired,
     bool OtherBossAlreadyResolved,
@@ -23,6 +25,14 @@ internal readonly record struct UnresolvedBossFacts(
 
 internal static class EncounterPolicy
 {
+    public static void ReleaseAbsentResolvedBossKeys(
+        HashSet<string> heldKeys,
+        IEnumerable<string> activeKeys)
+    {
+        HashSet<string> active = activeKeys.ToHashSet(StringComparer.Ordinal);
+        heldKeys.RemoveWhere(key => !active.Contains(key));
+    }
+
     public static bool ShouldStartNewEncounter(
         bool hasAnyActiveBoss,
         bool hasActiveCurrentParticipant,
@@ -43,6 +53,17 @@ internal static class EncounterPolicy
            !continueAfterPartyWipe &&
            CanUseEntryDownedSignal(bossKey, encounterGroupKey) &&
            (!hasDownedSignal || downedAtArm);
+
+    public static bool ShouldResolveVictory(
+        bool hasActiveKeepAliveNpc,
+        bool explicitFinalKill,
+        bool provisionalLastParticipantKill,
+        bool downedTransition)
+        // Explicit final forms and first-clear downed signals are authoritative.
+        // They must not be held open by a lingering controller, limb, or add.
+        => explicitFinalKill ||
+           downedTransition ||
+           (!hasActiveKeepAliveNpc && provisionalLastParticipantKill);
 
     public static EncounterOutcome? ResolveInactiveBoundary(EncounterBoundaryFacts facts)
     {
@@ -77,6 +98,13 @@ internal static class EncounterPolicy
 
         if (facts.PartyWipeObserved)
             return facts.ContinueAfterPartyWipe ? null : EncounterOutcome.Defeat;
+
+        // A participant that was present in the previous authoritative scan and then
+        // vanished without OnKill is a real despawn/disengagement boundary. Ordinary
+        // bosses may close immediately; scripted NPC-free phases and grouped gauntlets
+        // opt out through their lifecycle descriptor.
+        if (facts.ObservedNonKillDisappearance && facts.AllowDisappearanceBoundary)
+            return EncounterOutcome.Escaped;
 
         if (facts.ForeignEncounterStarted || !facts.LastHadLivingEngagedPlayer)
             return EncounterOutcome.Escaped;

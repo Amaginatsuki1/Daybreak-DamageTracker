@@ -7,6 +7,7 @@ namespace DaybreakDamageTracker.Common.Systems;
 internal sealed class EncounterSession
 {
     private readonly Dictionary<string, SessionBoss> _bosses = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, int> _bossOccurrenceCounts = new(StringComparer.Ordinal);
     private readonly Dictionary<EncounterPlayerKey, MutableConnectionLedger> _connections = [];
     private readonly List<MutableLogicalPlayer> _logicalPlayers = [];
     private readonly HashSet<string> _encounterGroupKeys = new(StringComparer.Ordinal);
@@ -42,7 +43,8 @@ internal sealed class EncounterSession
 
     public bool Merge(BossDescriptor descriptor)
     {
-        if (_bosses.TryGetValue(descriptor.Key, out SessionBoss? existing))
+        if (_bosses.TryGetValue(descriptor.Key, out SessionBoss? existing) &&
+            existing.Outcome == EncounterOutcome.Unknown)
         {
             // Keep the opening portrait stable, but accept lifecycle roles revealed by a
             // later phase using the same Boss Checklist/override key.
@@ -61,7 +63,10 @@ internal sealed class EncounterSession
 
         BossDescriptor copy = descriptor.Clone();
         bool downedAtArm = SafeDowned(copy.Downed);
-        _bosses[copy.Key] = new SessionBoss(copy, downedAtArm);
+        _bossOccurrenceCounts.TryGetValue(copy.Key, out int previousOccurrence);
+        int occurrence = previousOccurrence == int.MaxValue ? int.MaxValue : previousOccurrence + 1;
+        _bossOccurrenceCounts[copy.Key] = occurrence;
+        _bosses[copy.Key] = new SessionBoss(copy, downedAtArm, occurrence);
         _encounterGroupKeys.Add(GroupKey(copy));
         _continueAfterPartyWipe |= copy.ContinueAfterPartyWipe;
         _keepAliveNpcTypes.UnionWith(copy.KeepAliveNpcTypes);
@@ -101,7 +106,6 @@ internal sealed class EncounterSession
     {
         bool anyActive = false;
         HashSet<string> victoryGroups = new(StringComparer.Ordinal);
-        HashSet<string> reopenedGroups = new(StringComparer.Ordinal);
 
         foreach (SessionBoss boss in _bosses.Values)
         {
@@ -121,10 +125,9 @@ internal sealed class EncounterSession
             {
                 anyActive = true;
                 boss.ProvisionalLastParticipantKill = false;
+                boss.ObservedNonKillDisappearance = false;
                 if (currentHasAutoFinal)
                     boss.PendingAutoFinalKill = false;
-                if (boss.Outcome != EncounterOutcome.Unknown)
-                    reopenedGroups.Add(GroupKey(boss.Descriptor));
             }
             else if (boss.PreviousKeepAliveInstances.Count > 0)
             {
@@ -133,6 +136,8 @@ internal sealed class EncounterSession
                 // longer invalidates the killed boss's result.
                 boss.ProvisionalLastParticipantKill = boss.PendingAutoFinalKill &&
                     boss.PreviousKeepAliveInstances.All(previous => boss.KilledSinceParticipantScan.Contains(previous));
+                boss.ObservedNonKillDisappearance = boss.PreviousKeepAliveInstances
+                    .Any(previous => !boss.KilledSinceParticipantScan.Contains(previous));
                 boss.PendingAutoFinalKill = false;
             }
             else
@@ -145,8 +150,12 @@ internal sealed class EncounterSession
                     GroupKey(boss.Descriptor)) &&
                 !boss.DownedAtArm &&
                 SafeDowned(boss.Descriptor.Downed);
-            if (current.Count == 0 && boss.Outcome == EncounterOutcome.Unknown &&
-                (boss.ExplicitFinalKill || boss.ProvisionalLastParticipantKill || downedTransition))
+            if (boss.Outcome == EncounterOutcome.Unknown &&
+                EncounterPolicy.ShouldResolveVictory(
+                    current.Count > 0,
+                    boss.ExplicitFinalKill,
+                    boss.ProvisionalLastParticipantKill,
+                    downedTransition))
             {
                 victoryGroups.Add(GroupKey(boss.Descriptor));
             }
@@ -155,8 +164,6 @@ internal sealed class EncounterSession
             boss.KilledSinceParticipantScan.Clear();
         }
 
-        foreach (string groupKey in reopenedGroups)
-            SetGroupOutcome(groupKey, EncounterOutcome.Unknown);
         foreach (string groupKey in victoryGroups)
             SetGroupOutcome(groupKey, EncounterOutcome.Victory);
 
@@ -244,20 +251,23 @@ internal sealed class EncounterSession
                      .ToList())
         {
             bool continueAfterWipe = group.Any(value => value.Descriptor.ContinueAfterPartyWipe);
-            bool allowSiblingBoundary = group.All(value =>
+            bool allowDisappearanceBoundary = group.All(value =>
                 value.Descriptor.FinishOnBodyDeathWhenNoParticipants &&
                 EncounterPolicy.CanUseEntryDownedSignal(
                     value.Descriptor.Key,
                     GroupKey(value.Descriptor)));
+            bool observedNonKillDisappearance = group.Any(value => value.ObservedNonKillDisappearance);
             EncounterOutcome? outcome = EncounterPolicy.ResolveUnresolvedBoss(new UnresolvedBossFacts(
                 PartyWipeObserved,
                 continueAfterWipe,
                 noActivePlayers,
                 LastHadLivingEngagedPlayer,
+                observedNonKillDisappearance,
+                allowDisappearanceBoundary,
                 foreignEncounterStarted,
                 genericFallbackExpired,
                 closesMixedEncounter,
-                allowSiblingBoundary));
+                allowDisappearanceBoundary));
             if (outcome.HasValue)
                 SetGroupOutcome(group.Key, outcome.Value);
         }
@@ -282,27 +292,36 @@ internal sealed class EncounterSession
 
     public bool RecordPlayerDamage(int playerIndex, TargetSnapshot target, int damage)
     {
+        EncounterPlayerKey key = PlayerConnectionRegistry.GetCurrent(playerIndex);
+        string name = playerIndex >= 0 && playerIndex < Main.maxPlayers
+            ? Main.player[playerIndex].name
+            : $"Player {playerIndex}";
+        return RecordPlayerDamage(key, name, target, damage);
+    }
+
+    public bool RecordPlayerDamage(
+        EncounterPlayerKey key,
+        string playerName,
+        TargetSnapshot target,
+        int damage)
+    {
         if (damage <= 0)
             return false;
 
-        EncounterPlayerKey key = PlayerConnectionRegistry.GetCurrent(playerIndex);
         _encounterPlayers.Add(key);
         bool reconnected = false;
         if (!_connections.TryGetValue(key, out MutableConnectionLedger? connection))
         {
-            string name = playerIndex >= 0 && playerIndex < Main.maxPlayers
-                ? Main.player[playerIndex].name
-                : $"Player {playerIndex}";
             List<LogicalPlayerCandidate> reconnectCandidates = _logicalPlayers
                 .Select(candidate => new LogicalPlayerCandidate(
                     candidate.Name,
                     candidate.Connections.Any(PlayerConnectionRegistry.IsCurrent)))
                 .ToList();
-            int reconnectIndex = PlayerIdentityPolicy.FindReconnectCandidateIndex(reconnectCandidates, name);
+            int reconnectIndex = PlayerIdentityPolicy.FindReconnectCandidateIndex(reconnectCandidates, playerName);
             MutableLogicalPlayer? logical = reconnectIndex >= 0 ? _logicalPlayers[reconnectIndex] : null;
             if (logical is null)
             {
-                logical = new MutableLogicalPlayer(_logicalPlayers.Count + 1, name);
+                logical = new MutableLogicalPlayer(_logicalPlayers.Count + 1, playerName);
                 _logicalPlayers.Add(logical);
             }
             else
@@ -344,9 +363,21 @@ internal sealed class EncounterSession
             return;
 
         UnattributedDamage = SaturatingAdd(UnattributedDamage, damage);
+        TeamDamage = SaturatingAdd(TeamDamage, damage);
         SessionBoss? attributedBoss = FindUniqueAssociatedBoss(target);
         if (attributedBoss is not null)
+        {
+            attributedBoss.StartTick = attributedBoss.StartTick == 0
+                ? (long)Main.GameUpdateCount
+                : attributedBoss.StartTick;
+            attributedBoss.TeamDamage = SaturatingAdd(attributedBoss.TeamDamage, damage);
             attributedBoss.UnattributedDamage = SaturatingAdd(attributedBoss.UnattributedDamage, damage);
+            if (IsBossBodyFor(attributedBoss, target))
+            {
+                attributedBoss.BodyDamage = SaturatingAdd(attributedBoss.BodyDamage, damage);
+                BossBodyDamage = SaturatingAdd(BossBodyDamage, damage);
+            }
+        }
     }
 
     public bool AllEncounterPlayersDead()
@@ -401,6 +432,7 @@ internal sealed class EncounterSession
             results.Add(new PublicResultSnapshot
             {
                 EncounterId = EncounterId,
+                BossOccurrence = boss.Occurrence,
                 EncounterComplete = encounterComplete && index == resolved.Count - 1,
                 Outcome = boss.Outcome,
                 DurationTicks = Math.Max(0, endTick - startTick),
@@ -440,6 +472,7 @@ internal sealed class EncounterSession
                 boss.ExplicitFinalKill = false;
                 boss.ProvisionalLastParticipantKill = false;
                 boss.PendingAutoFinalKill = false;
+                boss.ObservedNonKillDisappearance = false;
             }
         }
     }
@@ -504,10 +537,11 @@ internal sealed class EncounterSession
             descriptor.Downed is not null,
             downedAtArm);
 
-    private sealed class SessionBoss(BossDescriptor descriptor, bool downedAtArm)
+    private sealed class SessionBoss(BossDescriptor descriptor, bool downedAtArm, int occurrence)
     {
         public BossDescriptor Descriptor { get; } = descriptor;
         public bool DownedAtArm { get; } = downedAtArm;
+        public int Occurrence { get; } = occurrence;
         public HashSet<int> AutoFinalNpcTypes { get; } = [];
         public HashSet<NpcInstanceKey> PreviousKeepAliveInstances { get; set; } = [];
         public HashSet<NpcInstanceKey> KilledSinceParticipantScan { get; } = [];
@@ -531,6 +565,7 @@ internal sealed class EncounterSession
         public bool PendingAutoFinalKill { get; set; }
         public bool ExplicitFinalKill { get; set; }
         public bool ProvisionalLastParticipantKill { get; set; }
+        public bool ObservedNonKillDisappearance { get; set; }
         private HashSet<int>? _associatedNpcTypes;
 
         public void InvalidateAssociatedTypes() => _associatedNpcTypes = null;

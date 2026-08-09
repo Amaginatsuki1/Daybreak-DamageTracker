@@ -35,6 +35,14 @@ Install the same `.tmod` on a tModLoader 1.4.4 server and every client. Start wi
    encounter resumes; without it, confirm the inactive encounter resolves as defeat.
 12. Hit the next boss/wave immediately as it appears after an NPC-free gap. Confirm its first hit
     is assigned to that encounter's private source rather than the old result or `Unclassified`.
+13. Damage an ordinary boss, then let it despawn while a living player remains near its last
+    position. After the short synchronization grace, confirm an escaped result and panel appear
+    without requiring a later boss or generic timeout. Repeat with all participants dead and
+    confirm defeat. A configured NPC-free cinematic/gauntlet must continue waiting instead.
+14. Keep one simultaneous Boss active, finish another Boss, wait until the finished Boss key has
+    fully disappeared, then summon that same Boss again. Confirm the dying controller does not
+    create a duplicate result, the second summon gets a zeroed ledger, and both occurrences remain
+    independently addressable in the panel, chat history mapping, and `/dt` history.
 
 ## Source tree and layout
 
@@ -45,6 +53,25 @@ Install the same `.tmod` on a tModLoader 1.4.4 server and every client. Start wi
 5. On a short viewport or long result, confirm the panel stays on screen, the mouse wheel reaches all content, the scroll indicator moves, and the close button remains fixed.
 6. Any click, source toggle, or scroll interaction on an automatic result should reset the full
    automatic-display timer; it should still disappear after the refreshed interval.
+7. Apply Cursed Inferno with a Flask of Cursed Flames. Confirm its real health loss increases the
+   player's ranking and boss-body/team totals, and the private tree shows the localized weapon
+   imbue root with a `Cursed Inferno · damage over time` child.
+8. Refresh the same DoT from a second player before it expires. Confirm the original remaining
+   interval stays with the first player and only the added tail belongs to the second. Test two
+   different supported DoTs together and confirm their shares still sum to the exact life loss.
+9. Disconnect/reconnect or reuse the player slot while an owned DoT remains active. Confirm its
+   public damage stays on the original logical player and private increments are never delivered
+   to the new connection.
+10. Cleanse or otherwise remove a supported debuff before its predicted expiry, then have another
+    player reapply it. Confirm no unexpired ownership segment from the removed effect survives.
+11. Test stacked Bone Javelin, Tentacle Spike, Blood Butcherer, Daybreak, and Stardust Cell effects.
+    Confirm each actual life-loss tick remains exact and the private row follows the projectile's
+    original player/source, including after that player disconnects from the public ranking.
+12. During a simultaneous fight, hit a target type that matches more than one Boss adapter, then
+    finish one Boss. Confirm that ambiguous atom never appears in either private source tree after
+    the active Boss list shrinks.
+13. Apply Soul Drain from a player-owned projectile. Confirm its actual life loss uses the player
+    and original projectile/item source; an ownerless application must remain unattributed.
 
 ## Multiplayer privacy and reconnects
 
@@ -77,4 +104,7 @@ Install the same `.tmod` on a tModLoader 1.4.4 server and every client. Start wi
 
 ## Supported attribution boundary
 
-Ordinary item and projectile hits are the supported attribution path. Damage-over-time effects and mod code that directly changes `npc.life` may not expose a trustworthy source in Terraria 1.4.4 and should not be assigned by guesswork.
+Ordinary item/projectile hits and Terraria's authoritative DoT life loss are captured. Supported
+vanilla debuffs keep duration-segment ownership. Unsupported or ownerless DoT remains included in
+team/body totals as unattributed server-side damage; mod code that changes `npc.life` outside the
+DoT updater still has no universal capture path and must not be assigned by guesswork.

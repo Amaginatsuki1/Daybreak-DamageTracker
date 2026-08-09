@@ -5,7 +5,7 @@ Mods: {
 			TeamTotal: 团队总伤害
 			BossBodyDamage: 团队对 Boss 本体伤害
 			BossBodyRow: 本体 {0}（{1}）
-			Unattributed: 未归属/服务端伤害
+			Unattributed: 未归属持续/服务端伤害
 			Duration: 战斗时长
 			Ranking: 玩家伤害排名
 			PersonalBreakdown: 你的伤害构成 — {0}
@@ -27,6 +27,8 @@ Mods: {
 			Unclassified: 未分类伤害
 			UnknownSource: 未知来源
 			WeaponBody: 武器本体
+			DotDamage: "{0} · 持续伤害"
+			UnknownDebuff: 减益 #{0}
 		}
 
 		Outcome: {

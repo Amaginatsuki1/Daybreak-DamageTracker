@@ -2,12 +2,13 @@ using DaybreakDamageTracker.Client.UI;
 using DaybreakDamageTracker.Common.Bosses;
 using DaybreakDamageTracker.Common.Data;
 using DaybreakDamageTracker.Common.Networking;
+using DaybreakDamageTracker.Common.Systems;
 
 namespace DaybreakDamageTracker.Client;
 
 internal static class ClientRuntime
 {
-    private static readonly Dictionary<TargetSourceKey, MutableSourceTree> CurrentSources = [];
+    private static readonly Dictionary<PrivateSourceBucketKey, MutableSourceTree> CurrentSources = [];
     private static readonly Dictionary<TargetSourceKey, MutableSourceTree> SuspendedSources = [];
     private static readonly List<BossPresentation> ActiveBosses = [];
     private static bool _encounterPrepared;
@@ -93,7 +94,8 @@ internal static class ClientRuntime
         _acceptingPrivateDamage = true;
         ActiveBosses.Clear();
         ActiveBosses.AddRange(bosses);
-        MergeSourceBuckets(CurrentSources, SuspendedSources);
+        MergeSuspendedSources();
+        ResolvePendingSources();
     }
 
     public static void OnEncounterStarted(long encounterId)
@@ -104,7 +106,8 @@ internal static class ClientRuntime
         ActiveEncounterId = encounterId;
         _encounterPrepared = true;
         _acceptingPrivateDamage = true;
-        MergeSourceBuckets(CurrentSources, SuspendedSources);
+        MergeSuspendedSources();
+        ResolvePendingSources();
     }
 
     public static void OnEncounterSuspended(long encounterId)
@@ -126,7 +129,7 @@ internal static class ClientRuntime
         bool carryToNextEncounter = BossCatalog.HasActiveBossClientSide() &&
             (CurrentSources.Count > 0 || SuspendedSources.Count > 0);
         if (carryToNextEncounter)
-            MergeSourceBuckets(SuspendedSources, CurrentSources);
+            MergeCurrentSourcesIntoSuspended();
         else
             SuspendedSources.Clear();
 
@@ -145,7 +148,7 @@ internal static class ClientRuntime
         bool carryToNextEncounter = BossCatalog.HasActiveBossClientSide() &&
             (CurrentSources.Count > 0 || SuspendedSources.Count > 0);
         if (carryToNextEncounter)
-            MergeSourceBuckets(SuspendedSources, CurrentSources);
+            MergeCurrentSourcesIntoSuspended();
         else
         {
             CurrentSources.Clear();
@@ -158,7 +161,26 @@ internal static class ClientRuntime
     }
 
     public static void RecordPrivateDamage(NPC target, DamageRootKey root, DamageLeafKey leaf, int damage)
+        => RecordPrivateDamage(
+            new TargetSnapshot(
+                TargetClassifier.IsEligibleHostile(target),
+                target.type,
+                target.realLife >= 0 && target.realLife < Main.maxNPCs
+                    ? Main.npc[target.realLife].type
+                    : -1),
+            root,
+            leaf,
+            damage);
+
+    public static void RecordPrivateDamage(
+        TargetSnapshot target,
+        DamageRootKey root,
+        DamageLeafKey leaf,
+        int damage)
     {
+        if (!target.Eligible || damage <= 0)
+            return;
+
         if (!_encounterPrepared)
         {
             if (!BossCatalog.HasActiveBossClientSide())
@@ -180,7 +202,19 @@ internal static class ClientRuntime
             return;
         }
 
-        SourceBucket(CurrentSources, TargetKey(target)).Add(root, leaf, damage);
+        TargetSourceKey targetKey = TargetKey(target);
+        PrivateSourceMatch match = PrivateSourceAttributionPolicy.Resolve(MatchingBossKeys(targetKey));
+        if (match.Kind == PrivateSourceMatchKind.Ambiguous)
+        {
+            // The server deliberately excludes ambiguous targets from every Boss.
+            // Dropping the private atom here prevents it from becoming falsely
+            // unique after one sibling result is removed from ActiveBosses.
+            return;
+        }
+
+        string bossKey = match.Kind == PrivateSourceMatchKind.Unique ? match.BossKey : string.Empty;
+        SourceBucket(CurrentSources, new PrivateSourceBucketKey(targetKey, bossKey))
+            .Add(root, leaf, damage);
     }
 
     public static void OnPublicResult(PublicResultSnapshot result, long? localTotal)
@@ -288,19 +322,15 @@ internal static class ClientRuntime
 
     private static MutableSourceTree ExtractSourcesForBoss(BossPresentation resultBoss)
     {
+        ResolvePendingSources();
         MutableSourceTree extracted = new();
-        foreach ((TargetSourceKey target, MutableSourceTree tree) in CurrentSources.ToArray())
+        foreach ((PrivateSourceBucketKey bucket, MutableSourceTree tree) in CurrentSources.ToArray())
         {
-            List<string> matches = ActiveBosses
-                .Where(candidate => Matches(candidate, target))
-                .Select(candidate => candidate.Key)
-                .Distinct(StringComparer.Ordinal)
-                .ToList();
-            if (matches.Count != 1 || !matches[0].Equals(resultBoss.Key, StringComparison.Ordinal))
+            if (!bucket.BossKey.Equals(resultBoss.Key, StringComparison.Ordinal))
                 continue;
 
             extracted.MergeFrom(tree);
-            CurrentSources.Remove(target);
+            CurrentSources.Remove(bucket);
         }
         return extracted;
     }
@@ -317,23 +347,62 @@ internal static class ClientRuntime
         return new TargetSourceKey(target.type, rootNpcType);
     }
 
-    private static MutableSourceTree SourceBucket(
-        Dictionary<TargetSourceKey, MutableSourceTree> buckets,
-        TargetSourceKey key)
+    private static TargetSourceKey TargetKey(TargetSnapshot target)
+        => new(target.NpcType, target.RootNpcType);
+
+    private static List<string> MatchingBossKeys(TargetSourceKey target)
+        => ActiveBosses
+            .Where(candidate => Matches(candidate, target))
+            .Select(candidate => candidate.Key)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+
+    private static void ResolvePendingSources()
+    {
+        foreach ((PrivateSourceBucketKey bucket, MutableSourceTree tree) in CurrentSources
+                     .Where(pair => string.IsNullOrEmpty(pair.Key.BossKey))
+                     .ToArray())
+        {
+            PrivateSourceMatch match = PrivateSourceAttributionPolicy.Resolve(MatchingBossKeys(bucket.Target));
+            if (match.Kind == PrivateSourceMatchKind.Pending)
+                continue;
+
+            CurrentSources.Remove(bucket);
+            if (match.Kind == PrivateSourceMatchKind.Unique)
+            {
+                SourceBucket(CurrentSources, new PrivateSourceBucketKey(bucket.Target, match.BossKey))
+                    .MergeFrom(tree);
+            }
+        }
+    }
+
+    private static void MergeSuspendedSources()
+    {
+        foreach ((TargetSourceKey target, MutableSourceTree tree) in SuspendedSources.ToArray())
+        {
+            SourceBucket(CurrentSources, new PrivateSourceBucketKey(target, string.Empty))
+                .MergeFrom(tree);
+        }
+        SuspendedSources.Clear();
+    }
+
+    private static void MergeCurrentSourcesIntoSuspended()
+    {
+        foreach ((PrivateSourceBucketKey bucket, MutableSourceTree tree) in CurrentSources.ToArray())
+            SourceBucket(SuspendedSources, bucket.Target).MergeFrom(tree);
+        CurrentSources.Clear();
+    }
+
+    private static MutableSourceTree SourceBucket<TKey>(
+        Dictionary<TKey, MutableSourceTree> buckets,
+        TKey key)
+        where TKey : notnull
     {
         if (!buckets.TryGetValue(key, out MutableSourceTree? tree))
             buckets[key] = tree = new MutableSourceTree();
         return tree;
     }
 
-    private static void MergeSourceBuckets(
-        Dictionary<TargetSourceKey, MutableSourceTree> destination,
-        Dictionary<TargetSourceKey, MutableSourceTree> source)
-    {
-        foreach ((TargetSourceKey key, MutableSourceTree tree) in source.ToArray())
-            SourceBucket(destination, key).MergeFrom(tree);
-        source.Clear();
-    }
-
     private readonly record struct TargetSourceKey(int NpcType, int RootNpcType);
+    private readonly record struct PrivateSourceBucketKey(TargetSourceKey Target, string BossKey);
 }

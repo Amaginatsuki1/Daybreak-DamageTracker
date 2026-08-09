@@ -2,6 +2,40 @@
 
 Notable changes are documented here. Versions follow the mod version in `build.txt`.
 
+## 0.1.7
+
+- Relicenses the source code and project documentation from MIT to GPL-3.0-only. Earlier published
+  releases keep the license shipped with them; the mod icon and Workshop artwork remain excluded.
+- Fixed ordinary bosses disappearing without `OnKill` while a living player was still nearby,
+  which previously left the encounter pending and produced no Daybreak result panel.
+- Keeps explicit NPC-free cinematics and grouped gauntlets on their configured wait path instead
+  of treating every temporary disappearance as an escape.
+- Measures damage-over-time from the authoritative life loss applied by
+  `NPC.UpdateNPC_BuffApplyDOTs`, including the final lethal tick.
+- Captures melee flasks and item/mod hit callbacks inside the real
+  `Player.ProcessHitAgainstNPC` application window instead of attaching after vanilla had already
+  applied its debuffs.
+- Attributes supported vanilla DoT debuffs by duration segment, so refreshing an existing debuff
+  owns only the added tail, an early cleanse cannot leave stale ownership, and a reconnect/player-
+  slot reuse cannot steal an older effect.
+- Attributes stacked Bone Javelin, Tentacle Spike, Blood Butcherer, Daybreak, and Stardust Cell DoT
+  through their live projectile instances while preserving the original connection and source.
+- Counts unsupported or ownerless DoT in team/body totals as unattributed server-side damage rather
+  than guessing a player.
+- Adds owner-only DoT source details and localized debuff rows to the private source tree.
+- Freezes private source attribution to the uniquely matched Boss at hit time, so a target that was
+  ambiguous during a simultaneous fight cannot move into another Boss's private tree later.
+- Lets explicit final-form kills and first-clear downed signals finish through lingering controllers
+  or adds, without reopening and republishing an already resolved Boss result.
+- Allows the same Boss key to start a fresh ledger only after it has been fully absent for an
+  authoritative scan, so a second summon during a surviving simultaneous Boss is neither omitted
+  nor confused with a dying controller. Each occurrence keeps a distinct history/panel identity;
+  the public result wire format is now version 6.
+- Adds owner-aware Soul Drain to the supported vanilla DoT set.
+- Replaces unbounded per-hit-point DoT distribution with exact cycle skipping and a bounded fallback
+  for pathological modded regeneration values.
+- Extends deterministic lifecycle/source/DoT allocation coverage to 59 logic tests.
+
 ## 0.1.6
 
 - Fixes a client load failure caused by applying local preferences before tModLoader finished registering the client config and HUD.

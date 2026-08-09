@@ -51,6 +51,7 @@ internal sealed class DamageResultHudSystem : ModSystem
         string bossKey = entry.Public.Bosses.FirstOrDefault()?.Key ?? string.Empty;
         _currentEntries.RemoveAll(existing =>
             existing.Public.EncounterId == entry.Public.EncounterId &&
+            existing.Public.BossOccurrence == entry.Public.BossOccurrence &&
             (existing.Public.Bosses.FirstOrDefault()?.Key ?? string.Empty).Equals(bossKey, StringComparison.Ordinal));
         _currentEntries.Add(entry);
         int capacity = ClientRuntime.HistoryCapacity;

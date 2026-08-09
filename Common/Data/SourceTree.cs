@@ -14,7 +14,8 @@ public readonly record struct DamageRootKey(DamageRootKind Kind, int PrimaryType
 public enum DamageLeafKind : byte
 {
     ItemBody,
-    Projectile
+    Projectile,
+    Debuff
 }
 
 public readonly record struct DamageLeafKey(DamageLeafKind Kind, int Type);
