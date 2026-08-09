@@ -98,8 +98,9 @@ internal static class PacketIO
 
     public static void WriteResult(BinaryWriter writer, PublicResultSnapshot result, long? ownDamage)
     {
-        writer.Write((byte)5);
+        writer.Write((byte)6);
         writer.Write(result.EncounterId);
+        writer.Write7BitEncodedInt(Math.Max(1, result.BossOccurrence));
         writer.Write(result.EncounterComplete);
         writer.Write((byte)result.Outcome);
         writer.Write(result.DurationTicks);
@@ -122,12 +123,13 @@ internal static class PacketIO
     public static ResultDelivery ReadResult(BinaryReader reader)
     {
         byte version = reader.ReadByte();
-        if (version != 5)
+        if (version != 6)
             throw new IOException($"Unsupported result version {version}.");
 
         PublicResultSnapshot result = new()
         {
             EncounterId = reader.ReadInt64(),
+            BossOccurrence = Math.Max(1, reader.Read7BitEncodedInt()),
             EncounterComplete = reader.ReadBoolean(),
             Outcome = ReadOutcome(reader),
             DurationTicks = Math.Max(0, reader.ReadInt64()),

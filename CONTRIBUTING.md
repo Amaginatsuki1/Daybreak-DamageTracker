@@ -13,6 +13,8 @@ Include the Terraria version, tModLoader version, Daybreak DamageTracker version
 
 ## Pull requests
 
+By submitting a contribution, you agree to license it under `GPL-3.0-only` and confirm that you have the right to do so.
+
 Keep changes focused. Preserve these project boundaries:
 
 - the internal mod ID is `DaybreakDamageTracker`;

@@ -18,7 +18,8 @@ internal enum DamagePacketType : byte
     HistorySyncEntry,
     ProjectileProvenance,
     EncounterSuspended,
-    EncounterCompleted
+    EncounterCompleted,
+    PrivateDotDamage
 }
 
 internal static class DamageNetwork
@@ -128,6 +129,38 @@ internal static class DamageNetwork
                 }
                 break;
             }
+
+            case DamagePacketType.PrivateDotDamage when Main.netMode == NetmodeID.MultiplayerClient:
+            {
+                int npcIndex = reader.ReadInt16();
+                int npcType = reader.Read7BitEncodedInt();
+                int rootNpcType = reader.ReadInt32();
+                int buffType = reader.Read7BitEncodedInt();
+                int damage = reader.Read7BitEncodedInt();
+                DamageRootKey? serverRoot = null;
+                if (reader.ReadBoolean())
+                {
+                    DamageRootKind rootKind = (DamageRootKind)reader.ReadByte();
+                    int primaryType = reader.Read7BitEncodedInt();
+                    if (Enum.IsDefined(rootKind) && primaryType >= 0)
+                        serverRoot = new DamageRootKey(rootKind, primaryType);
+                }
+                if (npcIndex >= 0 && npcIndex < Main.maxNPCs &&
+                    npcType > NPCID.None && npcType < NPCLoader.NPCCount &&
+                    rootNpcType >= -1 && rootNpcType < NPCLoader.NPCCount &&
+                    buffType > 0 && buffType < BuffLoader.BuffCount &&
+                    damage > 0)
+                {
+                    DotDamageSystem.ReceivePrivateDamage(
+                        npcIndex,
+                        npcType,
+                        rootNpcType,
+                        buffType,
+                        damage,
+                        serverRoot);
+                }
+                break;
+            }
         }
     }
 
@@ -213,6 +246,50 @@ internal static class DamageNetwork
         packet.Write((byte)root.Kind);
         packet.Write7BitEncodedInt(root.PrimaryType);
         packet.Send(projectile.owner);
+    }
+
+    public static void SendPrivateDotDamage(
+        DotDamageOwner owner,
+        int npcIndex,
+        TargetSnapshot target,
+        int buffType,
+        int damage,
+        DamageRootKey? serverRoot)
+    {
+        if (damage <= 0)
+            return;
+
+        if (Main.netMode == NetmodeID.SinglePlayer)
+        {
+            if (owner.Key.PlayerIndex == Main.myPlayer)
+            {
+                DotDamageSystem.ReceivePrivateDamage(
+                    npcIndex,
+                    target.NpcType,
+                    target.RootNpcType,
+                    buffType,
+                    damage,
+                    serverRoot);
+            }
+            return;
+        }
+
+        if (Main.netMode != NetmodeID.Server || !PlayerConnectionRegistry.IsCurrent(owner.Key))
+            return;
+
+        ModPacket packet = NewPacket(DamagePacketType.PrivateDotDamage);
+        packet.Write((short)npcIndex);
+        packet.Write7BitEncodedInt(target.NpcType);
+        packet.Write(target.RootNpcType);
+        packet.Write7BitEncodedInt(buffType);
+        packet.Write7BitEncodedInt(damage);
+        packet.Write(serverRoot.HasValue);
+        if (serverRoot.HasValue)
+        {
+            packet.Write((byte)serverRoot.Value.Kind);
+            packet.Write7BitEncodedInt(Math.Max(0, serverRoot.Value.PrimaryType));
+        }
+        packet.Send(owner.Key.PlayerIndex);
     }
 
     public static void SendResultToConfiguredRecipients(PublicResultSnapshot result)

@@ -5,7 +5,7 @@ Mods: {
 			TeamTotal: Team total damage
 			BossBodyDamage: Damage to boss body
 			BossBodyRow: Body {0} ({1})
-			Unattributed: Unattributed/server-side damage
+			Unattributed: Unattributed DoT/server-side damage
 			Duration: Duration
 			Ranking: Player damage ranking
 			PersonalBreakdown: Your damage sources — {0}
@@ -27,6 +27,8 @@ Mods: {
 			Unclassified: Unclassified damage
 			UnknownSource: Unknown source
 			WeaponBody: Weapon body
+			DotDamage: "{0} · damage over time"
+			UnknownDebuff: Debuff #{0}
 		}
 
 		Outcome: {

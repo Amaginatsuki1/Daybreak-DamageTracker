@@ -46,6 +46,9 @@ public sealed class PlayerResultRow
 public sealed class PublicResultSnapshot
 {
     public long EncounterId { get; set; }
+    // A Boss key can legitimately leave and be summoned again while another Boss from
+    // the same simultaneous encounter remains active. Keep each occurrence distinct.
+    public int BossOccurrence { get; set; } = 1;
     public bool EncounterComplete { get; set; }
     public EncounterOutcome Outcome { get; set; }
     public long DurationTicks { get; set; }

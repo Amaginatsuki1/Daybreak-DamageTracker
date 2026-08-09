@@ -417,10 +417,12 @@ internal sealed class ResultPanelElement : UIElement
             included.Add(block);
             mandatoryLineCount += required;
 
-            // Reserve one useful projectile row for the highest visible root that has
-            // projectiles before considering lower roots. This gives an item root the
-            // compact three-line form: total, weapon body, projectile summary.
-            if (!collapsed && protectedDetailLines == 0 && block.Projectiles.Count > 0 && mandatoryLineCount < sourceContentLineLimit)
+            // Reserve one useful child row for the highest visible root before
+            // considering lower roots. This keeps both projectile and DoT roots useful
+            // in a constrained viewport.
+            if (!collapsed && protectedDetailLines == 0 &&
+                (block.Projectiles.Count > 0 || block.Debuffs.Count > 0) &&
+                mandatoryLineCount < sourceContentLineLimit)
                 protectedDetailLines = 1;
         }
 
@@ -439,7 +441,7 @@ internal sealed class ResultPanelElement : UIElement
         int projectileLineBudget = Math.Max(0, remainingLines - otherRootLines);
 
         int[] projectileAllocations = new int[included.Count];
-        int[] desiredProjectileLines = included.Select(block => GetDesiredProjectileLineCount(block, cardKey)).ToArray();
+        int[] desiredProjectileLines = included.Select(block => GetDesiredDetailLineCount(block, cardKey)).ToArray();
 
         int expandedIndex = _expandedProjectileRoots.TryGetValue(cardKey, out DamageRootKey expandedRoot)
             ? included.FindIndex(block => expandedRoot == block.Root.Key)
@@ -484,13 +486,13 @@ internal sealed class ResultPanelElement : UIElement
         {
             SourceBlock block = included[i];
             bool collapsed = _collapsedSourceRoots.Contains(new SourceRootStateKey(cardKey, block.Root.Key));
-            bool hasChildren = block.ItemBody is not null || block.Projectiles.Count > 0;
+            bool hasChildren = block.ItemBody is not null || block.Projectiles.Count > 0 || block.Debuffs.Count > 0;
             AddRootLine(block.Root, tree.CanonicalTotal, cardKey, hasChildren, collapsed);
             if (collapsed)
                 continue;
             if (block.ItemBody is not null)
                 AddLeafLine(block.ItemBody, block.Root.Damage);
-            AddProjectileLines(block, projectileAllocations[i], cardKey);
+            AddDetailLines(block, projectileAllocations[i], cardKey);
         }
 
         if (otherRootLines > 0)
@@ -530,27 +532,34 @@ internal sealed class ResultPanelElement : UIElement
             .Where(leaf => leaf.Key.Kind == DamageLeafKind.Projectile)
             .OrderByDescending(leaf => leaf.Damage)
             .ToList();
+        List<SourceLeafSnapshot> debuffs = root.Leaves
+            .Where(leaf => leaf.Key.Kind == DamageLeafKind.Debuff)
+            .OrderByDescending(leaf => leaf.Damage)
+            .ToList();
 
         bool redundantFallback = root.Key.Kind == DamageRootKind.ProjectileFallback && projectiles.Count == 1 &&
             projectiles[0].Key.Type == root.Key.PrimaryType;
         if (redundantFallback)
             projectiles.Clear();
 
-        return new SourceBlock(root, itemBody, projectiles);
+        return new SourceBlock(root, itemBody, projectiles, debuffs);
     }
 
-    private int GetDesiredProjectileLineCount(SourceBlock block, CardKey cardKey)
+    private int GetDesiredDetailLineCount(SourceBlock block, CardKey cardKey)
     {
-        if (_collapsedSourceRoots.Contains(new SourceRootStateKey(cardKey, block.Root.Key)) || block.Projectiles.Count == 0)
+        if (_collapsedSourceRoots.Contains(new SourceRootStateKey(cardKey, block.Root.Key)))
             return 0;
+        int debuffLines = block.Debuffs.Count;
+        if (block.Projectiles.Count == 0)
+            return debuffLines;
         if (_expandedProjectileRoots.TryGetValue(cardKey, out DamageRootKey expanded) && expanded == block.Root.Key)
-            return block.Projectiles.Count + 1;
+            return debuffLines + block.Projectiles.Count + 1;
         if (block.Projectiles.Count == 1)
-            return 1;
+            return debuffLines + 1;
 
         int individualLimit = _settings.SourceLeafRows;
         int individuals = Math.Min(individualLimit, block.Projectiles.Count);
-        return individuals + (individuals < block.Projectiles.Count ? 1 : 0);
+        return debuffLines + individuals + (individuals < block.Projectiles.Count ? 1 : 0);
     }
 
     private void AddRootLine(
@@ -586,6 +595,18 @@ internal sealed class ResultPanelElement : UIElement
             $"{FormatDamage(leaf.Damage)}  ({Percent(leaf.Damage, rootDamage)})",
             1,
             new Color(205, 215, 230)));
+    }
+
+    private void AddDetailLines(SourceBlock block, int allocatedLines, CardKey cardKey)
+    {
+        if (allocatedLines <= 0)
+            return;
+
+        int debuffCount = Math.Min(block.Debuffs.Count, allocatedLines);
+        for (int index = 0; index < debuffCount; index++)
+            AddLeafLine(block.Debuffs[index], block.Root.Damage);
+
+        AddProjectileLines(block, allocatedLines - debuffCount, cardKey);
     }
 
     private void AddProjectileLines(SourceBlock block, int allocatedLines, CardKey cardKey)
@@ -815,6 +836,12 @@ internal sealed class ResultPanelElement : UIElement
     {
         DamageLeafKind.ItemBody => ClientRuntime.Text("UI.WeaponBody", "Weapon body"),
         DamageLeafKind.Projectile => ResolveProjectileName(key.Type),
+        DamageLeafKind.Debuff => ClientRuntime.Text(
+            "UI.DotDamage",
+            "{0} · damage over time",
+            key.Type > 0 && key.Type < BuffLoader.BuffCount
+                ? Lang.GetBuffName(key.Type)
+                : ClientRuntime.Text("UI.UnknownDebuff", "Debuff #{0}", key.Type)),
         _ => ClientRuntime.Text("UI.UnknownSource", "Unknown source")
     };
 
@@ -840,7 +867,10 @@ internal sealed class ResultPanelElement : UIElement
     };
 
     private static CardKey CardKeyFor(ClientHistoryEntry entry)
-        => new(entry.Public.EncounterId, entry.Public.Bosses.FirstOrDefault()?.Key ?? string.Empty);
+        => new(
+            entry.Public.EncounterId,
+            entry.Public.BossOccurrence,
+            entry.Public.Bosses.FirstOrDefault()?.Key ?? string.Empty);
 
     private sealed record CardLayout(
         CardKey Key,
@@ -852,14 +882,15 @@ internal sealed class ResultPanelElement : UIElement
         bool ShowSources,
         float Height);
 
-    private readonly record struct CardKey(long EncounterId, string BossKey);
+    private readonly record struct CardKey(long EncounterId, int BossOccurrence, string BossKey);
 
     private readonly record struct SourceRootStateKey(CardKey Card, DamageRootKey Root);
 
     private sealed record SourceBlock(
         SourceRootSnapshot Root,
         SourceLeafSnapshot? ItemBody,
-        List<SourceLeafSnapshot> Projectiles);
+        List<SourceLeafSnapshot> Projectiles,
+        List<SourceLeafSnapshot> Debuffs);
 
     private enum SourceToggleKind
     {

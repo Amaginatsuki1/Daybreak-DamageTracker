@@ -9,6 +9,8 @@
   <ItemGroup>
     <Compile Include="..\..\Common\Systems\EncounterPolicy.cs" Link="EncounterPolicy.cs" />
     <Compile Include="..\..\Common\Systems\BossAttributionPolicy.cs" Link="BossAttributionPolicy.cs" />
+    <Compile Include="..\..\Common\Systems\DotDamageAttributionPolicy.cs" Link="DotDamageAttributionPolicy.cs" />
+    <Compile Include="..\..\Common\Systems\PrivateSourceAttributionPolicy.cs" Link="PrivateSourceAttributionPolicy.cs" />
     <Compile Include="..\..\Common\Data\SourceTree.cs" Link="SourceTree.cs" />
   </ItemGroup>
 </Project>

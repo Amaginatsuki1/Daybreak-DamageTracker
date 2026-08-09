@@ -58,7 +58,10 @@ internal static class ClientResultHistory
     }
 
     private static ResultKey KeyOf(PublicResultSnapshot result)
-        => new(result.EncounterId, result.Bosses.FirstOrDefault()?.Key ?? string.Empty);
+        => new(
+            result.EncounterId,
+            result.BossOccurrence,
+            result.Bosses.FirstOrDefault()?.Key ?? string.Empty);
 
-    private readonly record struct ResultKey(long EncounterId, string BossKey);
+    private readonly record struct ResultKey(long EncounterId, int BossOccurrence, string BossKey);
 }

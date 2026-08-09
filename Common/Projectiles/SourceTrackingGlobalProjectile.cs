@@ -1,5 +1,6 @@
 using DaybreakDamageTracker.Common.Data;
 using DaybreakDamageTracker.Common.Networking;
+using DaybreakDamageTracker.Common.Systems;
 
 namespace DaybreakDamageTracker.Common.Projectiles;
 
@@ -9,12 +10,16 @@ internal sealed class SourceTrackingGlobalProjectile : GlobalProjectile
 
     public bool HasSource { get; private set; }
     public DamageRootKey RootSource { get; private set; }
+    internal DotDamageOwner? DotOwner { get; private set; }
     private bool CanShareWithOwner { get; set; }
 
     public override void OnSpawn(Projectile projectile, IEntitySource source)
     {
         HasSource = false;
         CanShareWithOwner = false;
+        DotOwner = Main.netMode != NetmodeID.MultiplayerClient
+            ? EncounterSystem.CaptureDotOwner(projectile.owner)
+            : null;
 
         if (projectile.owner < 0 || projectile.owner >= Main.maxPlayers)
             return;
