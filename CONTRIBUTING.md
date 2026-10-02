@@ -6,7 +6,7 @@ Thanks for helping improve Daybreak DamageTracker.
 
 - Confirm the server and every client use the same mod version.
 - Reproduce the problem with the smallest practical mod list.
-- Check whether the boss needs a lifecycle override in `DaybreakDamageTracker.Server.json`.
+- Check whether the boss needs a lifecycle override in `DaybreakDamageTracker_ServerConfig.json`.
 - Do not attach server configuration files or logs that contain player names, addresses, tokens, or unrelated private data.
 
 Include the Terraria version, tModLoader version, Daybreak DamageTracker version, single-player or multiplayer mode, relevant boss/mod names, and concise reproduction steps.

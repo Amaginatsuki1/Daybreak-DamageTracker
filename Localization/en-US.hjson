@@ -7,6 +7,9 @@ Mods: {
 			BossBodyRow: Body {0} ({1})
 			Unattributed: Unattributed DoT/server-side damage
 			Duration: Duration
+			FinalBlow: Final blow: {0}
+			FinalBlowByDirectHit: direct hit
+			FinalBlowByDamageOverTime: damage over time
 			Ranking: Player damage ranking
 			PersonalBreakdown: Your damage sources — {0}
 			PersonalBreakdownUnknown: Your damage sources
@@ -29,6 +32,23 @@ Mods: {
 			WeaponBody: Weapon body
 			DotDamage: "{0} · damage over time"
 			UnknownDebuff: Debuff #{0}
+			PreviewPlayerYou: You
+			PreviewPlayerTwo: Player 2
+			PreviewPlayerThree: Player 3
+			PreviewPlayerFour: Player 4
+			PreviewPlayer: Player {0}
+			PreviewYharon: Yharon
+			PreviewEnabled: On
+			PreviewDisabled: Off
+			PreviewContributors: Contributors
+			PreviewAllPlayers: All active players
+			ClientPreviewSummary: Auto-open: {0}  ·  Duration: {1}s  ·  Local history: {2}
+			ServerPreviewSummary: Server allowance  ·  Recipients: {0}  ·  Row limits: {1}/{2}/{3}
+			PreviewInteractionHint: Hover to scroll; click source arrows to expand or collapse.
+			SectionOrderDefault: Default: total → body → unattributed → duration → ranking → sources
+			SectionOrderHint: Use the arrows to reorder sections; boss identity, outcome, and final blow stay fixed.
+			ResetDefaultsConfirm: Click again to restore every default
+			ResetDefaultsApplied: Defaults restored — press Save to apply
 		}
 
 		Outcome: {
@@ -51,29 +71,301 @@ Mods: {
 		}
 
 		Configs: {
+			ResultPanelSection: {
+				TeamTotal: {
+					Label: Team total damage
+					Tooltip: ""
+				}
+
+				BossBodyDamage: {
+					Label: Boss body damage
+					Tooltip: ""
+				}
+
+				UnattributedDamage: {
+					Label: Unattributed damage
+					Tooltip: ""
+				}
+
+				Duration: {
+					Label: Fight duration
+					Tooltip: ""
+				}
+
+				Ranking: {
+					Label: Player damage ranking
+					Tooltip: ""
+				}
+
+				PersonalBreakdown: {
+					Label: Personal damage sources
+					Tooltip: ""
+				}
+
+				Tooltip: ""
+			}
+
 			ClientConfig: {
-				DisplayName: Daybreak DamageTracker
+				DisplayName: Daybreak DamageTracker — Client Settings
+
+				Headers: {
+					Preview: Current panel preview
+					Behavior: Automatic display and appearance
+					Layout: Panel content order
+					Reset: Restore defaults
+				}
+
+				PanelPreview: {
+					Label: Current panel preview
+					Tooltip: Reuses the actual result panel and updates live from the current server policy and this page's unsaved local behavior and appearance settings. Hover to scroll and click source controls; preview interaction never affects the real HUD timer or history.
+				}
 
 				AutoShowResults: {
-					Label: Automatically show result panel
+					Label: Automatically show result panel (default: on)
 					Tooltip: Show a boss result panel automatically when that boss concludes. Chat history and /dt remain available when disabled.
 				}
 
 				HistoryCount: {
-					Label: Saved result count
+					Label: Saved result count (default: 4)
 					Tooltip: Keep 1 to 10 recent boss results. The latest uses /dt, followed by /dt1 through /dt9 as needed.
 				}
 
 				AutoHideSeconds: {
-					Label: Automatic panel duration
+					Label: Automatic panel duration (default: 12 seconds)
 					Tooltip: Keep an automatically opened result panel visible for 1 to 120 seconds. Interacting with it restarts this timer. Panels opened manually with /dt remain open until closed.
 				}
 
 				PanelBackgroundOpacity: {
-					Label: Panel background opacity
+					Label: Panel background opacity (default: 0.90)
 					Tooltip: Adjust only the dark panel background. Text, portraits, borders, and buttons remain fully visible.
 				}
+
+				PanelSectionOrder: {
+					Label: Visible content order
+					Tooltip: Reorder locally visible sections with the arrows. Boss identity, outcome, and final blow stay fixed at the top. This cannot reveal sections disabled by the server.
+				}
+
+				ResetAllToDefaults: {
+					Label: Restore all defaults
+					Tooltip: Click once to arm, then click again within 5 seconds to restore every option on this page. You must still press Save afterward.
+				}
 			}
+
+			ServerConfig: {
+				DisplayName: Daybreak DamageTracker — Server Settings
+
+				Headers: {
+					Preview: Server allowance preview
+					Presentation: Result contents
+					RowLimits: Server row limits
+					Delivery: Delivery
+					Lifecycle: Boss lifecycle
+					BossOverrides: Boss overrides
+					Reset: Restore defaults
+				}
+
+				PanelPreview: {
+					Label: Server allowance preview
+					Tooltip: Reuses the actual result panel to show this page's unsaved server display policy. Hover to scroll and click source controls. Clients cannot override its sections or row counts; appearance and timing are client-only.
+				}
+
+				ShowBossHeader: {
+					Label: Show boss name and portrait (default: on)
+					Tooltip: Controls the boss information at the top of every client's result panel.
+				}
+
+				ShowTeamTotal: {
+					Label: Show team total damage (default: on)
+					Tooltip: Allows clients to display the team-total row.
+				}
+
+				ShowBossBodyDamage: {
+					Label: Show boss body damage (default: on)
+					Tooltip: Allows clients to display per-boss body damage and its percentage.
+				}
+
+				ShowDuration: {
+					Label: Show fight duration (default: on)
+					Tooltip: Allows clients to display the duration of that boss fight.
+				}
+
+				ShowRanking: {
+					Label: Show player ranking (default: on)
+					Tooltip: Allows clients to display the public player damage ranking.
+				}
+
+				ShowPersonalBreakdown: {
+					Label: Show personal damage sources (default: on)
+					Tooltip: Allows each player to inspect their own private source tree. Other players' source trees are never sent.
+				}
+
+				ShowUnattributedDamage: {
+					Label: Show unattributed damage (default: on)
+					Tooltip: Shows damage-over-time or server-side damage that cannot be safely attributed to a player.
+				}
+
+				ShowFinalBlow: {
+					Label: Show final blow (default: on)
+					Tooltip: Shows the final-blow player and damage kind when they can be identified reliably.
+				}
+
+				ChatSummary: {
+					Label: Send chat summary (default: on)
+					Tooltip: Sends the compact “Boss | outcome | view command” message when a boss concludes.
+				}
+
+				RankingRows: {
+					Label: Ranking row limit (default: 10)
+					Tooltip: Maximum ranking rows the server allows a client to receive and display.
+				}
+
+				SourceRootRows: {
+					Label: Source row limit (default: 6)
+					Tooltip: Default maximum weapon or source roots in each player's own source tree.
+				}
+
+				SourceLeafRows: {
+					Label: Projectile row limit (default: 3)
+					Tooltip: Default maximum projectile kinds shown under each source.
+				}
+
+				Recipients: {
+					Label: Result recipients (default: all active players)
+					Tooltip: Send results to every active player or only to players who contributed to that fight.
+				}
+
+				TransitionSyncGraceTicks: {
+					Label: Transition sync grace (default: 2 ticks)
+					Tooltip: Short confirmation window for boss phase changes and network synchronization. Keep the default unless diagnosing compatibility.
+				}
+
+				GenericDespawnFallbackSeconds: {
+					Label: Generic escape fallback (default: 0, disabled)
+					Tooltip: Resolve an ambiguous missing boss as escaped after this time. Zero disables this heuristic fallback.
+				}
+
+				BossOverrides: {
+					Label: Boss override list (default: empty)
+					Tooltip: Advanced compatibility settings. Add entries only after confirming a special boss's NPC structure; changes apply after the current fight.
+				}
+
+				ResetAllToDefaults: {
+					Label: Restore all defaults
+					Tooltip: Click once to arm, then click again within 5 seconds to restore every server option and the boss override list. You must still press Save, and server edit authorization still applies.
+				}
+			}
+
+			BossOverrideEntryConfig: {
+				BossKey: {
+					Label: Boss Checklist key (default: empty)
+					Tooltip: Leave empty until an override target is specified.
+				}
+
+				EncounterGroupKey: {
+					Label: Encounter group key (default: empty)
+					Tooltip: ""
+				}
+
+				NameLocalizationKey: {
+					Label: Name localization key (default: empty)
+					Tooltip: ""
+				}
+
+				NameOverride: {
+					Label: Name override (default: empty)
+					Tooltip: ""
+				}
+
+				PortraitNpcType: {
+					Label: Portrait NPC type (default: empty)
+					Tooltip: ""
+				}
+
+				TriggerNpcTypes: {
+					Label: Trigger NPC types (default: empty)
+					Tooltip: ""
+				}
+
+				BodyNpcTypes: {
+					Label: Body NPC types (default: empty)
+					Tooltip: ""
+				}
+
+				ControllerNpcTypes: {
+					Label: Controller NPC types (default: empty)
+					Tooltip: ""
+				}
+
+				AddNpcTypes: {
+					Label: Associated-add NPC types (default: empty)
+					Tooltip: ""
+				}
+
+				BarrierNpcTypes: {
+					Label: Barrier NPC types (default: empty)
+					Tooltip: ""
+				}
+
+				KeepAliveNpcTypes: {
+					Label: Keep-alive NPC types (default: empty)
+					Tooltip: ""
+				}
+
+				FinalNpcTypes: {
+					Label: Final-form NPC types (default: empty)
+					Tooltip: ""
+				}
+
+				FinishOnBodyDeathWhenNoParticipants: {
+					Label: Finish after body death with no participants (default: inherit)
+					Tooltip: ""
+				}
+
+				ContinueAfterPartyWipe: {
+					Label: Continue after party wipe (default: inherit)
+					Tooltip: ""
+				}
+
+				Tooltip: ""
+			}
+
+			ResultRecipients: {
+				Tooltip: ""
+
+				AllActivePlayers: {
+					Label: All Active Players
+					Tooltip: ""
+				}
+
+				Contributors: {
+					Label: Contributors
+					Tooltip: ""
+				}
+			}
+
+			OverrideBooleanMode: {
+				Inherit: {
+					Label: Inherit automatic behavior
+					Tooltip: ""
+				}
+
+				Enabled: {
+					Label: Enabled
+					Tooltip: ""
+				}
+
+				Disabled: {
+					Label: Disabled
+					Tooltip: ""
+				}
+
+				Tooltip: ""
+			}
+		}
+
+		ConfigMessages: {
+			InvalidServerConfig: The Daybreak DamageTracker server configuration was invalid.
+			ServerEditDenied: You cannot edit the Daybreak DamageTracker server configuration. Hosts may edit directly; a dedicated server must temporarily authorize the current connection from its console.
 		}
 	}
 }

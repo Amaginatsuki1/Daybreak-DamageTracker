@@ -20,6 +20,13 @@ public enum EncounterState : byte
     Transitioning
 }
 
+public enum FinalBlowKind : byte
+{
+    None,
+    DirectHit,
+    DamageOverTime
+}
+
 public sealed class BossPresentation
 {
     public string Key { get; set; } = string.Empty;
@@ -31,11 +38,18 @@ public sealed class BossPresentation
     public int PortraitNpcType { get; set; }
     public EncounterOutcome Outcome { get; set; }
     public long BodyDamage { get; set; }
-    // These bounded type sets let the owning client keep its private source tree
-    // separated per boss without revealing any other player's detailed sources.
+    // Owner name of the damage event that actually ended this boss. DoT kills name the
+    // dominant share owner of the lethal tick; unattributed kills stay unset.
+    public string FinalBlowPlayerName { get; set; } = string.Empty;
+    public FinalBlowKind FinalBlowKind { get; set; }
+    // These bounded type and exact-instance sets let the owning client keep its private
+    // source tree separated per boss without revealing another player's detailed sources.
     public List<int> BodyNpcTypes { get; set; } = [];
     public List<int> AssociatedNpcTypes { get; set; } = [];
+    public List<AssociatedNpcInstance> AssociatedNpcInstances { get; set; } = [];
 }
+
+public readonly record struct AssociatedNpcInstance(int NpcIndex, int NpcType, long SpawnSerial);
 
 public sealed class PlayerResultRow
 {
@@ -57,6 +71,11 @@ public sealed class PublicResultSnapshot
     public long UnattributedDamage { get; set; }
     public List<BossPresentation> Bosses { get; set; } = [];
     public List<PlayerResultRow> Players { get; set; } = [];
+    // The server sends only the configured top-N public rows. These aggregates retain
+    // the count and total for the collapsed "other players" line without disclosing
+    // names that the server did not authorize for display.
+    public int OmittedPlayerCount { get; set; }
+    public long OmittedPlayerDamage { get; set; }
     // Exact connection totals never leave the server. They let a reconnect contribute
     // to one public logical-player row without reconciling the new client's private
     // source tree against damage recorded by an earlier connection.
@@ -66,10 +85,13 @@ public sealed class PublicResultSnapshot
 public sealed class PresentationSettings
 {
     public const int MaximumHistoryCount = 10;
+    public const float DefaultFadeSeconds = 1.5f;
 
+    // These three fields remain in the version-2 network/legacy JSON shape only.
+    // Current clients own automatic opening, total lifetime, and fade behavior.
     public bool AutoShow { get; set; } = true;
     public float AutoShowSeconds { get; set; } = 12f;
-    public float FadeSeconds { get; set; } = 1.5f;
+    public float FadeSeconds { get; set; } = DefaultFadeSeconds;
     public bool ShowBossHeader { get; set; } = true;
     public bool ShowTeamTotal { get; set; } = true;
     public bool ShowBossBodyDamage { get; set; } = true;
@@ -77,6 +99,7 @@ public sealed class PresentationSettings
     public bool ShowRanking { get; set; } = true;
     public bool ShowPersonalBreakdown { get; set; } = true;
     public bool ShowUnattributedDamage { get; set; } = true;
+    public bool ShowFinalBlow { get; set; } = true;
     public int RankingRows { get; set; } = 10;
     public int SourceRootRows { get; set; } = 6;
     public int SourceLeafRows { get; set; } = 3;
@@ -95,6 +118,7 @@ public sealed class PresentationSettings
         ShowRanking = ShowRanking,
         ShowPersonalBreakdown = ShowPersonalBreakdown,
         ShowUnattributedDamage = ShowUnattributedDamage,
+        ShowFinalBlow = ShowFinalBlow,
         RankingRows = Math.Clamp(RankingRows, 1, 64),
         SourceRootRows = Math.Clamp(SourceRootRows, 1, 32),
         SourceLeafRows = Math.Clamp(SourceLeafRows, 1, 16),

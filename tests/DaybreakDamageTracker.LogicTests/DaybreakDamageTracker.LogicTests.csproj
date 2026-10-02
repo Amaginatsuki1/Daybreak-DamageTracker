@@ -8,9 +8,25 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="..\..\Common\Systems\EncounterPolicy.cs" Link="EncounterPolicy.cs" />
+    <Compile Include="..\..\Common\Systems\AutomaticFinalizationTracker.cs" Link="AutomaticFinalizationTracker.cs" />
     <Compile Include="..\..\Common\Systems\BossAttributionPolicy.cs" Link="BossAttributionPolicy.cs" />
+    <Compile Include="..\..\Common\Systems\FinalBlowPolicy.cs" Link="FinalBlowPolicy.cs" />
+    <Compile Include="..\..\Common\Config\ServerConfigAuthorizationPolicy.cs" Link="ServerConfigAuthorizationPolicy.cs" />
+    <Compile Include="..\..\Common\Config\ResultRecipients.cs" Link="ResultRecipients.cs" />
+    <Compile Include="..\..\Common\Config\ServerConfigValuePolicy.cs" Link="ServerConfigValuePolicy.cs" />
+    <Compile Include="..\..\Common\Networking\ProjectileProvenanceBatchQueue.cs" Link="ProjectileProvenanceBatchQueue.cs" />
+    <Compile Include="..\..\Common\Networking\BoundedStringIO.cs" Link="BoundedStringIO.cs" />
+    <Compile Include="..\..\Common\Networking\ResultDeliveryProjectionPolicy.cs" Link="ResultDeliveryProjectionPolicy.cs" />
+    <Compile Include="..\..\Common\Networking\PendingStateRequestQueue.cs" Link="PendingStateRequestQueue.cs" />
+    <Compile Include="..\..\Common\Systems\PendingDisconnectQueue.cs" Link="PendingDisconnectQueue.cs" />
     <Compile Include="..\..\Common\Systems\DotDamageAttributionPolicy.cs" Link="DotDamageAttributionPolicy.cs" />
     <Compile Include="..\..\Common\Systems\PrivateSourceAttributionPolicy.cs" Link="PrivateSourceAttributionPolicy.cs" />
+    <Compile Include="..\..\Common\Bosses\BossFallbackPolicy.cs" Link="BossFallbackPolicy.cs" />
+    <Compile Include="..\..\Common\Bosses\SpawnedNpcAttributionPolicy.cs" Link="SpawnedNpcAttributionPolicy.cs" />
+    <Compile Include="..\..\Common\Bosses\SpawnedNpcInstancePolicy.cs" Link="SpawnedNpcInstancePolicy.cs" />
+    <Compile Include="..\..\Common\Bosses\CalamityCompatibilityPolicy.cs" Link="CalamityCompatibilityPolicy.cs" />
+    <Compile Include="..\..\Client\ChatSummaryBatcher.cs" Link="ChatSummaryBatcher.cs" />
+    <Compile Include="..\..\Client\ResultPanelSectionOrder.cs" Link="ResultPanelSectionOrder.cs" />
     <Compile Include="..\..\Common\Data\SourceTree.cs" Link="SourceTree.cs" />
   </ItemGroup>
 </Project>

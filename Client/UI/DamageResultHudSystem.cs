@@ -1,3 +1,4 @@
+using DaybreakDamageTracker.Common.Data;
 using Microsoft.Xna.Framework.Input;
 using Terraria.UI;
 
@@ -6,12 +7,19 @@ namespace DaybreakDamageTracker.Client.UI;
 [Autoload(Side = ModSide.Client)]
 internal sealed class DamageResultHudSystem : ModSystem
 {
+    private const float AutomaticFadeDurationSeconds = PresentationSettings.DefaultFadeSeconds;
     private UserInterface? _userInterface;
     private DamageResultUIState? _uiState;
     private readonly List<ClientHistoryEntry> _currentEntries = [];
     private bool _automatic;
-    private int _remainingTicks;
-    private int _fadeTicks;
+    // The game loop can call UpdateUI more often than 60 times per second (frame
+    // skip off, high refresh rates), so the auto-hide window is tracked in real
+    // GameTime instead of per-call tick decrements. While the game is paused the
+    // deadline is pushed forward so a paused player keeps the panel.
+    private TimeSpan _lastUiClock;
+    private TimeSpan _autoHideDeadline;
+    private float _durationSeconds = 1f;
+    private float _fadeSeconds;
 
     public bool IsVisible => _userInterface?.CurrentState is not null;
 
@@ -30,16 +38,15 @@ internal sealed class DamageResultHudSystem : ModSystem
 
         _currentEntries.Clear();
         _currentEntries.Add(entry);
-        _uiState.Bind(_currentEntries, ClientRuntime.Presentation, ClientRuntime.PanelBackgroundOpacity);
+        _uiState.Bind(
+            _currentEntries,
+            ClientRuntime.EffectivePresentation,
+            ClientRuntime.PanelBackgroundOpacity,
+            ClientRuntime.PanelSectionOrder);
         _uiState.SetOpacity(1f);
         _automatic = automatic;
         if (_automatic)
             ResetAutomaticTimer();
-        else
-        {
-            _remainingTicks = 0;
-            _fadeTicks = 0;
-        }
         _userInterface.SetState(_uiState);
     }
 
@@ -57,7 +64,11 @@ internal sealed class DamageResultHudSystem : ModSystem
         int capacity = ClientRuntime.HistoryCapacity;
         if (_currentEntries.Count > capacity)
             _currentEntries.RemoveRange(0, _currentEntries.Count - capacity);
-        _uiState.Bind(_currentEntries, ClientRuntime.Presentation, ClientRuntime.PanelBackgroundOpacity);
+        _uiState.Bind(
+            _currentEntries,
+            ClientRuntime.EffectivePresentation,
+            ClientRuntime.PanelBackgroundOpacity,
+            ClientRuntime.PanelSectionOrder);
         _uiState.SetOpacity(1f);
         if (_automatic)
             ResetAutomaticTimer();
@@ -68,20 +79,25 @@ internal sealed class DamageResultHudSystem : ModSystem
         if (!IsVisible || _uiState is null || _currentEntries.Count == 0)
             return;
 
-        _uiState.Bind(_currentEntries, ClientRuntime.Presentation, ClientRuntime.PanelBackgroundOpacity);
-        int maximumTicks = AutomaticDurationTicks();
-        _fadeTicks = AutomaticFadeTicks(maximumTicks);
+        _uiState.Bind(
+            _currentEntries,
+            ClientRuntime.EffectivePresentation,
+            ClientRuntime.PanelBackgroundOpacity,
+            ClientRuntime.PanelSectionOrder);
+        _durationSeconds = AutomaticDurationSeconds();
+        _fadeSeconds = AutomaticFadeSeconds(_durationSeconds);
         if (!_automatic)
         {
             _uiState.SetOpacity(1f);
             return;
         }
 
-        _remainingTicks = Math.Clamp(_remainingTicks, 1, maximumTicks);
-        float opacity = _fadeTicks > 0 && _remainingTicks <= _fadeTicks
-            ? MathHelper.Clamp(_remainingTicks / (float)_fadeTicks, 0f, 1f)
-            : 1f;
-        _uiState.SetOpacity(opacity);
+        double remainingSeconds = Math.Clamp(
+            (_autoHideDeadline - _lastUiClock).TotalSeconds,
+            0.05,
+            Math.Max(0.05, _durationSeconds));
+        _autoHideDeadline = _lastUiClock + TimeSpan.FromSeconds(remainingSeconds);
+        _uiState.SetOpacity(ComputeOpacity(TimeSpan.FromSeconds(remainingSeconds)));
     }
 
     public void ApplyLocalPreferences()
@@ -101,8 +117,7 @@ internal sealed class DamageResultHudSystem : ModSystem
     {
         _currentEntries.Clear();
         _automatic = false;
-        _remainingTicks = 0;
-        _fadeTicks = 0;
+        _autoHideDeadline = TimeSpan.Zero;
         _userInterface?.SetState(null);
     }
 
@@ -130,6 +145,11 @@ internal sealed class DamageResultHudSystem : ModSystem
 
     public override void UpdateUI(GameTime gameTime)
     {
+        // Result packets for independently resolved Bosses can arrive in one update.
+        // Publish the final command mapping once, after the packet burst has settled.
+        ClientRuntime.FlushPendingChatSummary();
+        _lastUiClock = gameTime.TotalGameTime;
+
         if (_userInterface?.CurrentState is null || _uiState is null)
             return;
 
@@ -139,19 +159,23 @@ internal sealed class DamageResultHudSystem : ModSystem
             return;
         }
 
-        if (_automatic && !Main.gamePaused)
+        if (_automatic)
         {
-            _remainingTicks--;
-            if (_remainingTicks <= 0)
+            if (Main.gamePaused)
             {
-                Hide();
-                return;
+                _autoHideDeadline += gameTime.ElapsedGameTime;
             }
+            else
+            {
+                TimeSpan remaining = _autoHideDeadline - gameTime.TotalGameTime;
+                if (remaining <= TimeSpan.Zero)
+                {
+                    Hide();
+                    return;
+                }
 
-            float opacity = _fadeTicks > 0 && _remainingTicks <= _fadeTicks
-                ? MathHelper.Clamp(_remainingTicks / (float)_fadeTicks, 0f, 1f)
-                : 1f;
-            _uiState.SetOpacity(opacity);
+                _uiState.SetOpacity(ComputeOpacity(remaining));
+            }
         }
 
         _userInterface.Update(gameTime);
@@ -184,15 +208,19 @@ internal sealed class DamageResultHudSystem : ModSystem
 
     private void ResetAutomaticTimer()
     {
-        _remainingTicks = AutomaticDurationTicks();
-        _fadeTicks = AutomaticFadeTicks(_remainingTicks);
+        _durationSeconds = AutomaticDurationSeconds();
+        _fadeSeconds = AutomaticFadeSeconds(_durationSeconds);
+        _autoHideDeadline = _lastUiClock + TimeSpan.FromSeconds(_durationSeconds);
     }
 
-    private static int AutomaticDurationTicks()
-        => Math.Max(1, ClientRuntime.AutoHideSeconds * 60);
+    private float ComputeOpacity(TimeSpan remaining)
+        => _fadeSeconds > 0f
+            ? MathHelper.Clamp((float)(remaining.TotalSeconds / _fadeSeconds), 0f, 1f)
+            : 1f;
 
-    private static int AutomaticFadeTicks(int durationTicks)
-        => Math.Min(
-            durationTicks,
-            Math.Max(0, (int)Math.Round(ClientRuntime.Presentation.FadeSeconds * 60f)));
+    private static float AutomaticDurationSeconds()
+        => Math.Max(1f, ClientRuntime.AutoHideSeconds);
+
+    private static float AutomaticFadeSeconds(float durationSeconds)
+        => Math.Min(durationSeconds, AutomaticFadeDurationSeconds);
 }

@@ -7,6 +7,9 @@ Mods: {
 			BossBodyRow: 本体 {0}（{1}）
 			Unattributed: 未归属持续/服务端伤害
 			Duration: 战斗时长
+			FinalBlow: 最后一击：{0}
+			FinalBlowByDirectHit: 直接命中
+			FinalBlowByDamageOverTime: 持续伤害
 			Ranking: 玩家伤害排名
 			PersonalBreakdown: 你的伤害构成 — {0}
 			PersonalBreakdownUnknown: 你的伤害构成
@@ -29,6 +32,23 @@ Mods: {
 			WeaponBody: 武器本体
 			DotDamage: "{0} · 持续伤害"
 			UnknownDebuff: 减益 #{0}
+			PreviewPlayerYou: 你
+			PreviewPlayerTwo: 玩家二
+			PreviewPlayerThree: 玩家三
+			PreviewPlayerFour: 玩家四
+			PreviewPlayer: 玩家 {0}
+			PreviewYharon: 犽戎
+			PreviewEnabled: 开
+			PreviewDisabled: 关
+			PreviewContributors: 本场贡献者
+			PreviewAllPlayers: 所有在线玩家
+			ClientPreviewSummary: 自动弹出：{0}　·　持续 {1} 秒　·　本地历史 {2} 场
+			ServerPreviewSummary: 服务端许可　·　接收：{0}　·　行数上限 {1}/{2}/{3}
+			PreviewInteractionHint: 鼠标悬停后滚动；点击来源箭头可展开或收起。
+			SectionOrderDefault: 默认：总伤害 → 本体 → 未归属 → 时长 → 排名 → 构成
+			SectionOrderHint: 使用箭头调整顺序；Boss 名称、状态与最后一击固定在顶部。
+			ResetDefaultsConfirm: 再点一次，确认全部恢复默认值
+			ResetDefaultsApplied: 已恢复为默认值——点击“保存”后生效
 		}
 
 		Outcome: {
@@ -51,29 +71,301 @@ Mods: {
 		}
 
 		Configs: {
+			ResultPanelSection: {
+				TeamTotal: {
+					Label: 团队总伤害
+					// Tooltip: ""
+				}
+
+				BossBodyDamage: {
+					Label: Boss 本体伤害
+					// Tooltip: ""
+				}
+
+				UnattributedDamage: {
+					Label: 未归属伤害
+					// Tooltip: ""
+				}
+
+				Duration: {
+					Label: 战斗时长
+					// Tooltip: ""
+				}
+
+				Ranking: {
+					Label: 玩家伤害排名
+					// Tooltip: ""
+				}
+
+				PersonalBreakdown: {
+					Label: 本人伤害构成
+					// Tooltip: ""
+				}
+
+				// Tooltip: ""
+			}
+
 			ClientConfig: {
-				DisplayName: Daybreak DamageTracker
+				DisplayName: Daybreak DamageTracker — 客户端设置
+
+				Headers: {
+					Preview: 当前面板预览
+					Behavior: 自动显示与外观
+					Layout: 面板内容顺序
+					Reset: 恢复默认值
+				}
+
+				PanelPreview: {
+					Label: 当前面板预览
+					Tooltip: 直接复用实际结算面板，并以当前服务端许可和本页尚未保存的本地行为、外观设置实时刷新。鼠标悬停后可滚动并点击来源控件；预览交互不会影响真实 HUD 的计时或历史。
+				}
 
 				AutoShowResults: {
-					Label: 自动弹出结算面板
+					Label: 自动弹出结算面板（默认：开）
 					Tooltip: Boss 结算时自动显示面板。关闭后聊天记录和 /dt 手动查看仍然有效。
 				}
 
 				HistoryCount: {
-					Label: 保留结算记录数
+					Label: 保留结算记录数（默认：4）
 					Tooltip: 可保留最近 1 至 10 场 Boss 结算。最新一场使用 /dt，随后按需使用 /dt1 至 /dt9。
 				}
 
 				AutoHideSeconds: {
-					Label: 自动面板持续时间
+					Label: 自动面板持续时间（默认：12 秒）
 					Tooltip: 自动弹出的结算面板可持续 1 至 120 秒；点击、展开或滚动面板会重新开始计时。使用 /dt 手动打开的面板仍会一直保留到主动关闭。
 				}
 
 				PanelBackgroundOpacity: {
-					Label: 面板底色不透明度
+					Label: 面板底色不透明度（默认：0.90）
 					Tooltip: 只调整面板深色底色；文字、Boss 头像、边框和按钮不会一起变透明。
 				}
+
+				PanelSectionOrder: {
+					Label: 可见内容排列顺序
+					Tooltip: 使用箭头调整本机面板中已获服务端许可项目的先后顺序。Boss 名称、状态与最后一击固定在顶部；此设置不能显示服务端关闭的内容。
+				}
+
+				ResetAllToDefaults: {
+					Label: 全部恢复默认值
+					Tooltip: 第一次点击进入确认，5 秒内再次点击才会把本页全部选项恢复默认；之后仍需点击“保存”。
+				}
 			}
+
+			ServerConfig: {
+				DisplayName: Daybreak DamageTracker — 服务端设置
+
+				Headers: {
+					Preview: 服务端许可预览
+					Presentation: 结算内容
+					RowLimits: 服务端行数上限
+					Delivery: 发送范围
+					Lifecycle: Boss 生命周期
+					BossOverrides: Boss 覆盖配置
+					Reset: 恢复默认值
+				}
+
+				PanelPreview: {
+					Label: 服务端许可预览
+					Tooltip: 直接复用实际结算面板，显示本页尚未保存的服务端展示规则；鼠标悬停后可滚动并点击来源控件。客户端不能覆盖这些项目或行数，外观和持续时间只在客户端设置中调整。
+				}
+
+				ShowBossHeader: {
+					Label: 显示 Boss 名称与头像（默认：开）
+					Tooltip: 控制所有客户端结算面板顶部的 Boss 信息。
+				}
+
+				ShowTeamTotal: {
+					Label: 显示团队总伤害（默认：开）
+					Tooltip: 允许客户端显示团队总伤害。
+				}
+
+				ShowBossBodyDamage: {
+					Label: 显示 Boss 本体伤害（默认：开）
+					Tooltip: 允许客户端显示每只 Boss 的本体伤害及占比。
+				}
+
+				ShowDuration: {
+					Label: 显示战斗时长（默认：开）
+					Tooltip: 允许客户端显示该 Boss 的战斗持续时间。
+				}
+
+				ShowRanking: {
+					Label: 显示玩家排名（默认：开）
+					Tooltip: 允许客户端显示公开的玩家伤害排名。
+				}
+
+				ShowPersonalBreakdown: {
+					Label: 显示本人伤害构成（默认：开）
+					Tooltip: 允许每位玩家查看自己的私有来源树；不会向其发送别人的来源树。
+				}
+
+				ShowUnattributedDamage: {
+					Label: 显示未归属伤害（默认：开）
+					Tooltip: 显示无法安全归属到玩家的持续伤害或服务端伤害。
+				}
+
+				ShowFinalBlow: {
+					Label: 显示最后一击（默认：开）
+					Tooltip: 显示能够可靠确认的最后一击玩家和伤害类型。
+				}
+
+				ChatSummary: {
+					Label: 发送聊天摘要（默认：开）
+					Tooltip: Boss 结算时发送“Boss｜状态｜查看指令”的极简聊天信息。
+				}
+
+				RankingRows: {
+					Label: 排名行数上限（默认：10）
+					Tooltip: 服务端允许客户端接收并显示的排名行数上限。
+				}
+
+				SourceRootRows: {
+					Label: 来源行数上限（默认：6）
+					Tooltip: 每位玩家本人来源树默认显示的武器或来源数量上限。
+				}
+
+				SourceLeafRows: {
+					Label: 弹幕行数上限（默认：3）
+					Tooltip: 每个来源下默认显示的弹幕种类数量上限。
+				}
+
+				Recipients: {
+					Label: 结算接收范围（默认：所有在线玩家）
+					Tooltip: 向所有在线玩家发送结算，或仅向本场有贡献的玩家发送。
+				}
+
+				TransitionSyncGraceTicks: {
+					Label: 转阶段同步宽限（默认：2 tick）
+					Tooltip: 为 Boss 转阶段或网络同步保留的短确认窗口。除非排查兼容问题，否则建议保持默认值。
+				}
+
+				GenericDespawnFallbackSeconds: {
+					Label: 通用脱战回退时间（默认：0，禁用）
+					Tooltip: 无法取得可靠终结信号时，经过该时长按脱战结算；0 表示禁用猜测式回退。
+				}
+
+				BossOverrides: {
+					Label: Boss 覆盖列表（默认：空）
+					Tooltip: 高级兼容设置。仅在确认特殊 Boss 的 NPC 结构后添加；修改会在当前 Boss 战结束后生效。
+				}
+
+				ResetAllToDefaults: {
+					Label: 全部恢复默认值
+					Tooltip: 第一次点击进入确认，5 秒内再次点击才会把服务端本页全部选项与 Boss 覆盖列表恢复默认；之后仍需点击“保存”，并继续遵守服务端修改权限。
+				}
+			}
+
+			BossOverrideEntryConfig: {
+				BossKey: {
+					Label: Boss Checklist 键（默认：空）
+					Tooltip: 留空表示尚未指定覆盖目标。
+				}
+
+				EncounterGroupKey: {
+					Label: 遭遇组键（默认：空）
+					// Tooltip: ""
+				}
+
+				NameLocalizationKey: {
+					Label: 名称本地化键（默认：空）
+					// Tooltip: ""
+				}
+
+				NameOverride: {
+					Label: 名称覆盖（默认：空）
+					// Tooltip: ""
+				}
+
+				PortraitNpcType: {
+					Label: 头像 NPC 类型（默认：空）
+					// Tooltip: ""
+				}
+
+				TriggerNpcTypes: {
+					Label: 触发 NPC 类型（默认：空）
+					// Tooltip: ""
+				}
+
+				BodyNpcTypes: {
+					Label: 本体 NPC 类型（默认：空）
+					// Tooltip: ""
+				}
+
+				ControllerNpcTypes: {
+					Label: 控制体 NPC 类型（默认：空）
+					// Tooltip: ""
+				}
+
+				AddNpcTypes: {
+					Label: 附属目标 NPC 类型（默认：空）
+					// Tooltip: ""
+				}
+
+				BarrierNpcTypes: {
+					Label: 护盾 NPC 类型（默认：空）
+					// Tooltip: ""
+				}
+
+				KeepAliveNpcTypes: {
+					Label: 保持战斗的 NPC 类型（默认：空）
+					// Tooltip: ""
+				}
+
+				FinalNpcTypes: {
+					Label: 最终形态 NPC 类型（默认：空）
+					// Tooltip: ""
+				}
+
+				FinishOnBodyDeathWhenNoParticipants: {
+					Label: 本体死亡且无参与者时结束（默认：继承）
+					// Tooltip: ""
+				}
+
+				ContinueAfterPartyWipe: {
+					Label: 团灭后继续等待（默认：继承）
+					// Tooltip: ""
+				}
+
+				// Tooltip: ""
+			}
+
+			ResultRecipients: {
+				// Tooltip: ""
+
+				AllActivePlayers: {
+					Label: 所有在线玩家
+					// Tooltip: ""
+				}
+
+				Contributors: {
+					Label: 仅本场贡献者
+					// Tooltip: ""
+				}
+			}
+
+			OverrideBooleanMode: {
+				Inherit: {
+					Label: 继承自动规则
+					// Tooltip: ""
+				}
+
+				Enabled: {
+					Label: 启用
+					// Tooltip: ""
+				}
+
+				Disabled: {
+					Label: 禁用
+					// Tooltip: ""
+				}
+
+				// Tooltip: ""
+			}
+		}
+
+		ConfigMessages: {
+			InvalidServerConfig: Daybreak DamageTracker 服务端配置格式无效。
+			ServerEditDenied: 你没有修改 Daybreak DamageTracker 服务端配置的权限。房主可直接修改；独立服务器需由控制台临时授权当前连接。
 		}
 	}
 }
