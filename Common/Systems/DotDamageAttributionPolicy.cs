@@ -4,6 +4,63 @@ internal readonly record struct WeightedDamageClaim<T>(T Id, int Weight) where T
 internal readonly record struct WeightedDamageShare<T>(T Id, int Damage) where T : notnull;
 internal readonly record struct DotLeaseWindow(long StartTick, long EndTick);
 
+/// <summary>
+/// Tracks only attributable extensions. Every application, including an ownerless one,
+/// still observes the old duration so a removed effect cannot retain a predicted lease.
+/// </summary>
+internal sealed class DotLeaseRegistry<T> where T : struct
+{
+    private readonly Dictionary<int, List<Segment>> _leases = [];
+
+    public void Clear() => _leases.Clear();
+
+    public void RegisterExtension(
+        int buffType,
+        int previousTime,
+        int currentTime,
+        T? attribution,
+        long now)
+    {
+        if (_leases.TryGetValue(buffType, out List<Segment>? segments))
+        {
+            if (DotDamageAttributionPolicy.ShouldResetLeaseSegments(previousTime))
+                segments.Clear();
+            else
+                segments.RemoveAll(segment => segment.EndTick <= now);
+        }
+
+        DotLeaseWindow? window = DotDamageAttributionPolicy.GetExtensionWindow(now, previousTime, currentTime);
+        if (attribution.HasValue && window.HasValue)
+        {
+            if (segments is null)
+                _leases[buffType] = segments = [];
+            segments.Add(new Segment(window.Value.StartTick, window.Value.EndTick, attribution.Value));
+        }
+        else if (segments is { Count: 0 })
+        {
+            _leases.Remove(buffType);
+        }
+    }
+
+    public T? GetAttribution(int buffType, long now)
+    {
+        if (!_leases.TryGetValue(buffType, out List<Segment>? segments))
+            return null;
+
+        segments.RemoveAll(segment => segment.EndTick <= now);
+        foreach (Segment segment in segments)
+        {
+            if (segment.StartTick <= now && now < segment.EndTick)
+                return segment.Attribution;
+        }
+        if (segments.Count == 0)
+            _leases.Remove(buffType);
+        return null;
+    }
+
+    private readonly record struct Segment(long StartTick, long EndTick, T Attribution);
+}
+
 internal static class DotDamageAttributionPolicy
 {
     public static int GetUnattributedRegenWeight(
@@ -50,6 +107,12 @@ internal sealed class WeightedDamageAccumulator<T> where T : notnull
     private const int MaximumExactTail = 4096;
     private readonly Dictionary<T, decimal> _credits = [];
     private readonly Dictionary<T, int> _activeWeights = [];
+
+    public void Reset()
+    {
+        _credits.Clear();
+        _activeWeights.Clear();
+    }
 
     public List<WeightedDamageShare<T>> Allocate(
         int actualDamage,

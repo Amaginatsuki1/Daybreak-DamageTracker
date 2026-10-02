@@ -7,22 +7,27 @@ namespace DaybreakDamageTracker.Client.UI;
 internal sealed class ResultPanelElement : UIElement
 {
     public const float MaximumPanelWidth = 700f;
+    public const float CloseButtonSize = 22f;
+    public const float CloseButtonInset = 12f;
     private const float Margin = 18f;
     private const float MetricHeight = 24f;
     private const float RankingHeight = 21f;
     private const float SourceHeight = 19f;
     private const float SectionHeadingHeight = 27f;
     private const float BossRowHeight = 58f;
+    private const float FinalBlowRowHeight = 18f;
 
     private readonly List<ClientHistoryEntry> _entries = [];
     private readonly List<CardLayout> _cards = [];
     private PresentationSettings _settings = new();
+    private IReadOnlyList<ResultPanelSection> _sectionOrder = ResultPanelSectionOrderPolicy.CreateDefault();
     private readonly List<RenderLine> _rankingLines = [];
     private readonly List<RenderLine> _sourceLines = [];
-    private readonly List<RenderLine> _metricLines = [];
     private readonly List<SourceToggleHitbox> _sourceToggleHitboxes = [];
     private readonly HashSet<SourceRootStateKey> _collapsedSourceRoots = [];
-    private readonly Dictionary<CardKey, DamageRootKey> _expandedProjectileRoots = [];
+    // Expansion is keyed by both result card and source root. Keeping one value
+    // per card made expanding a second weapon silently collapse the first one.
+    private readonly HashSet<SourceRootStateKey> _expandedProjectileRoots = [];
     private readonly HashSet<CardKey> _showAllSourceRoots = [];
     private int _layoutScreenWidth;
     private int _layoutScreenHeight;
@@ -30,35 +35,58 @@ internal sealed class ResultPanelElement : UIElement
     private float _contentHeight;
     private float _scrollOffset;
     private float _maximumScrollOffset;
-    private float _backgroundOpacity = 0.94f;
+    private float _backgroundOpacity = ClientConfig.DefaultPanelBackgroundOpacity;
+    private float? _embeddedWidth;
+    private float? _embeddedHeight;
+    private bool _interactive = true;
+    private float _layoutMargin = Margin;
 
     public float DesiredWidth { get; private set; } = MaximumPanelWidth;
     public float DesiredHeight { get; private set; } = 300f;
     public float Opacity { get; set; } = 1f;
+    public event Action? ScrollInteraction;
+
+    public bool ConfigureEmbeddedViewport(float width, float height, bool interactive)
+    {
+        width = Math.Max(1f, width);
+        height = Math.Max(1f, height);
+        bool changed = !_embeddedWidth.HasValue || !_embeddedHeight.HasValue ||
+            Math.Abs(_embeddedWidth.Value - width) > 0.5f ||
+            Math.Abs(_embeddedHeight.Value - height) > 0.5f ||
+            _interactive != interactive;
+        if (!changed)
+            return false;
+
+        _embeddedWidth = width;
+        _embeddedHeight = height;
+        _interactive = interactive;
+        BuildLines();
+        return true;
+    }
 
     public void Bind(
         IReadOnlyList<ClientHistoryEntry> entries,
         PresentationSettings settings,
-        float backgroundOpacity)
+        float backgroundOpacity,
+        IReadOnlyList<ResultPanelSection>? sectionOrder = null)
     {
-        bool sameEntries = _entries.Count == entries.Count &&
-            _entries.Zip(entries).All(pair => ReferenceEquals(pair.First, pair.Second));
-        if (!sameEntries)
-        {
-            _expandedProjectileRoots.Clear();
-            _collapsedSourceRoots.Clear();
-            _showAllSourceRoots.Clear();
+        HashSet<CardKey> previousCards = _entries.Select(CardKeyFor).ToHashSet();
+        bool retainsVisibleCard = entries.Any(entry => previousCards.Contains(CardKeyFor(entry)));
+        if (!retainsVisibleCard)
             _scrollOffset = 0f;
-        }
         _entries.Clear();
         _entries.AddRange(entries);
         _settings = settings.SanitizedClone();
+        _sectionOrder = ResultPanelSectionOrderPolicy.Sanitize(sectionOrder);
         _backgroundOpacity = MathHelper.Clamp(backgroundOpacity, 0f, 1f);
         BuildLines();
     }
 
     public bool TryToggleSourceTree(Vector2 mousePosition)
     {
+        if (!_interactive)
+            return false;
+
         foreach (SourceToggleHitbox toggle in _sourceToggleHitboxes)
         {
             if (!toggle.Bounds.Contains((int)mousePosition.X, (int)mousePosition.Y))
@@ -75,18 +103,14 @@ internal sealed class ResultPanelElement : UIElement
                 if (!_collapsedSourceRoots.Remove(stateKey))
                 {
                     _collapsedSourceRoots.Add(stateKey);
-                    if (_expandedProjectileRoots.TryGetValue(toggle.Card, out DamageRootKey expanded) && expanded == rootKey)
-                        _expandedProjectileRoots.Remove(toggle.Card);
+                    _expandedProjectileRoots.Remove(stateKey);
                 }
             }
             else if (toggle.Kind == SourceToggleKind.ProjectileList && toggle.RootKey is DamageRootKey projectileRoot)
             {
-                bool expanding = !_expandedProjectileRoots.TryGetValue(toggle.Card, out DamageRootKey expanded) ||
-                    expanded != projectileRoot;
-                if (expanding)
-                    _expandedProjectileRoots[toggle.Card] = projectileRoot;
-                else
-                    _expandedProjectileRoots.Remove(toggle.Card);
+                SourceRootStateKey stateKey = new(toggle.Card, projectileRoot);
+                if (!_expandedProjectileRoots.Remove(stateKey))
+                    _expandedProjectileRoots.Add(stateKey);
             }
             else
             {
@@ -102,6 +126,9 @@ internal sealed class ResultPanelElement : UIElement
 
     public bool RefreshLayoutForViewport()
     {
+        if (_embeddedWidth.HasValue)
+            return false;
+
         float uiScale = Math.Max(Main.UIScale, 0.5f);
         if (_layoutScreenWidth == Main.screenWidth &&
             _layoutScreenHeight == Main.screenHeight &&
@@ -122,11 +149,15 @@ internal sealed class ResultPanelElement : UIElement
         Rectangle panel = dimensions.ToRectangle();
         DrawPanel(spriteBatch, panel);
 
-        float contentTop = panel.Y + Margin;
-        float contentBottom = panel.Bottom - Margin;
-        float x = panel.X + Margin;
+        float contentTop = panel.Y + _layoutMargin;
+        float contentBottom = panel.Bottom - _layoutMargin;
+        float x = panel.X + _layoutMargin;
         float y = contentTop - _scrollOffset;
-        float right = panel.Right - Margin - (_maximumScrollOffset > 0f ? 10f : 0f);
+        float usableWidth = Math.Max(0f, panel.Width - _layoutMargin * 2f);
+        float scrollReserve = _maximumScrollOffset > 0f
+            ? Math.Min(10f, Math.Max(0f, usableWidth - 1f))
+            : 0f;
+        float right = panel.Right - _layoutMargin - scrollReserve;
 
         for (int cardIndex = 0; cardIndex < _cards.Count; cardIndex++)
         {
@@ -142,58 +173,70 @@ internal sealed class ResultPanelElement : UIElement
                 DrawBossHeader(spriteBatch, card.Entry, x, y, right, contentTop, contentBottom);
                 y += BossHeaderHeight(card.Entry);
             }
-
-            foreach (RenderLine line in card.Metrics)
+            else if (FinalBlowOnlyHeight(card.Entry) > 0f)
             {
-                if (IsFullyVisible(y, MetricHeight, contentTop, contentBottom))
-                    DrawLine(spriteBatch, line, x, right, y, 0.92f);
-                y += MetricHeight;
+                DrawFinalBlowOnly(spriteBatch, card.Entry, x, y, right, contentTop, contentBottom);
+                y += FinalBlowOnlyHeight(card.Entry);
             }
 
-            if (card.ShowRanking && card.Ranking.Count > 0)
+            foreach (CardSectionLayout section in card.Sections)
             {
-                if (IsFullyVisible(y, SectionHeadingHeight, contentTop, contentBottom))
+                if (section.Kind == ResultPanelSection.Ranking)
                 {
-                    string heading = TrimToWidth(ClientRuntime.Text("UI.Ranking", "Player damage ranking"), Math.Max(0f, right - x), 0.96f);
-                    DrawText(spriteBatch, heading, new Vector2(x, y + 2f), new Color(112, 222, 255), 0.96f);
-                }
-                y += SectionHeadingHeight;
-                foreach (RenderLine line in card.Ranking)
-                {
-                    if (IsFullyVisible(y, RankingHeight, contentTop, contentBottom))
-                        DrawLine(spriteBatch, line, x, right, y, 0.84f);
-                    y += RankingHeight;
-                }
-            }
-
-            if (card.ShowSources && card.Sources.Count > 0)
-            {
-                if (IsFullyVisible(y, SectionHeadingHeight, contentTop, contentBottom))
-                {
-                    long localTotal = card.Entry.PrivateSources.CanonicalTotal;
-                    string heading = card.Entry.PrivateSources.CanonicalTotalKnown
-                        ? ClientRuntime.Text("UI.PersonalBreakdown", "Your damage sources — {0}", FormatDamage(localTotal))
-                        : ClientRuntime.Text("UI.PersonalBreakdownUnknown", "Your damage sources");
-                    heading = TrimToWidth(heading, Math.Max(0f, right - x), 0.96f);
-                    DrawText(spriteBatch, heading, new Vector2(x, y + 2f), new Color(255, 210, 112), 0.96f);
-                }
-                y += SectionHeadingHeight;
-                foreach (RenderLine line in card.Sources)
-                {
-                    if (IsFullyVisible(y, SourceHeight, contentTop, contentBottom))
+                    if (IsFullyVisible(y, SectionHeadingHeight, contentTop, contentBottom))
                     {
-                        RenderLine drawnLine = line;
-                        if (line.ToggleKind != SourceToggleKind.None)
-                        {
-                            float toggleLeft = x + line.Indent * 20f;
-                            Rectangle hitbox = new((int)toggleLeft, (int)y, Math.Max(1, (int)(right - toggleLeft)), (int)SourceHeight);
-                            _sourceToggleHitboxes.Add(new SourceToggleHitbox(hitbox, card.Key, line.ToggleRoot, line.ToggleKind));
-                            if (hitbox.Contains((int)Main.MouseScreen.X, (int)Main.MouseScreen.Y))
-                                drawnLine = line with { Color = new Color(125, 220, 255) };
-                        }
-                        DrawLine(spriteBatch, drawnLine, x, right, y, line.Indent == 0 ? 0.82f : 0.76f);
+                        float headingRight = ContentRightAtY(right, y + 2f, SectionHeadingHeight);
+                        string heading = TrimToWidth(ClientRuntime.Text("UI.Ranking", "Player damage ranking"), Math.Max(0f, headingRight - x), 0.96f);
+                        DrawText(spriteBatch, heading, new Vector2(x, y + 2f), new Color(112, 222, 255), 0.96f);
                     }
-                    y += SourceHeight;
+                    y += SectionHeadingHeight;
+                    foreach (RenderLine line in section.Lines)
+                    {
+                        if (IsFullyVisible(y, RankingHeight, contentTop, contentBottom))
+                            DrawLine(spriteBatch, line, x, right, y, 0.84f);
+                        y += RankingHeight;
+                    }
+                    continue;
+                }
+
+                if (section.Kind == ResultPanelSection.PersonalBreakdown)
+                {
+                    if (IsFullyVisible(y, SectionHeadingHeight, contentTop, contentBottom))
+                    {
+                        long localTotal = card.Entry.PrivateSources.CanonicalTotal;
+                        string heading = card.Entry.PrivateSources.CanonicalTotalKnown
+                            ? ClientRuntime.Text("UI.PersonalBreakdown", "Your damage sources — {0}", FormatDamage(localTotal))
+                            : ClientRuntime.Text("UI.PersonalBreakdownUnknown", "Your damage sources");
+                        float headingRight = ContentRightAtY(right, y + 2f, SectionHeadingHeight);
+                        heading = TrimToWidth(heading, Math.Max(0f, headingRight - x), 0.96f);
+                        DrawText(spriteBatch, heading, new Vector2(x, y + 2f), new Color(255, 210, 112), 0.96f);
+                    }
+                    y += SectionHeadingHeight;
+                    foreach (RenderLine line in section.Lines)
+                    {
+                        if (IsFullyVisible(y, SourceHeight, contentTop, contentBottom))
+                        {
+                            RenderLine drawnLine = line;
+                            if (_interactive && line.ToggleKind != SourceToggleKind.None)
+                            {
+                                float toggleLeft = x + IndentOffset(line.Indent, right - x);
+                                Rectangle hitbox = new((int)toggleLeft, (int)y, Math.Max(1, (int)(right - toggleLeft)), (int)SourceHeight);
+                                _sourceToggleHitboxes.Add(new SourceToggleHitbox(hitbox, card.Key, line.ToggleRoot, line.ToggleKind));
+                                if (hitbox.Contains((int)Main.MouseScreen.X, (int)Main.MouseScreen.Y))
+                                    drawnLine = line with { Color = new Color(125, 220, 255) };
+                            }
+                            DrawLine(spriteBatch, drawnLine, x, right, y, line.Indent == 0 ? 0.82f : 0.76f);
+                        }
+                        y += SourceHeight;
+                    }
+                    continue;
+                }
+
+                foreach (RenderLine line in section.Lines)
+                {
+                    if (IsFullyVisible(y, MetricHeight, contentTop, contentBottom))
+                        DrawLine(spriteBatch, line, x, right, y, 0.92f);
+                    y += MetricHeight;
                 }
             }
         }
@@ -204,27 +247,44 @@ internal sealed class ResultPanelElement : UIElement
     public override void Update(GameTime gameTime)
     {
         base.Update(gameTime);
-        if (ContainsPoint(Main.MouseScreen) && !PlayerInput.IgnoreMouseInterface)
+        if (_interactive && ContainsPoint(Main.MouseScreen) && !PlayerInput.IgnoreMouseInterface)
             Main.LocalPlayer.mouseInterface = true;
     }
 
     public override void ScrollWheel(UIScrollWheelEvent evt)
     {
-        base.ScrollWheel(evt);
-        if (_maximumScrollOffset <= 0f)
+        if (!_interactive)
             return;
 
+        // Even a short automatic panel counts a wheel gesture as viewing it, but
+        // only consume Terraria's hotbar wheel input when this panel actually
+        // moved. At an embedded preview boundary the event may continue to the
+        // surrounding ModConfig list.
+        ScrollInteraction?.Invoke();
+        if (_maximumScrollOffset <= 0f)
+        {
+            if (_embeddedHeight.HasValue)
+                base.ScrollWheel(evt);
+            else
+                PlayerInput.LockVanillaMouseScroll("DaybreakDamageTracker/ResultPanel");
+            return;
+        }
+
+        float previousOffset = _scrollOffset;
         float step = Math.Sign(evt.ScrollWheelValue) * SourceHeight * 3f;
         _scrollOffset = Math.Clamp(_scrollOffset - step, 0f, _maximumScrollOffset);
-        PlayerInput.LockVanillaMouseScroll("DaybreakDamageTracker/ResultPanel");
-        ModContent.GetInstance<DamageResultHudSystem>().KeepOpenAfterInteraction();
+        if (Math.Abs(_scrollOffset - previousOffset) > 0.01f)
+            PlayerInput.LockVanillaMouseScroll("DaybreakDamageTracker/ResultPanel");
+        else if (_embeddedHeight.HasValue)
+            base.ScrollWheel(evt);
+        else
+            PlayerInput.LockVanillaMouseScroll("DaybreakDamageTracker/ResultPanel");
     }
 
     private void BuildLines()
     {
         _rankingLines.Clear();
         _sourceLines.Clear();
-        _metricLines.Clear();
         _cards.Clear();
         _sourceToggleHitboxes.Clear();
 
@@ -233,10 +293,13 @@ internal sealed class ResultPanelElement : UIElement
         _layoutScreenHeight = Main.screenHeight;
         _layoutUiScale = uiScale;
 
-        float uiWidth = Main.screenWidth / uiScale;
-        float uiHeight = Main.screenHeight / uiScale;
-        DesiredWidth = Math.Max(1f, Math.Min(MaximumPanelWidth, uiWidth - 36f));
-        float maxHeight = Math.Max(1f, uiHeight - 36f);
+        float uiWidth = _embeddedWidth ?? Main.screenWidth / uiScale - 36f;
+        float uiHeight = _embeddedHeight ?? Main.screenHeight / uiScale - 36f;
+        DesiredWidth = Math.Max(1f, Math.Min(MaximumPanelWidth, uiWidth));
+        _layoutMargin = Math.Min(
+            Margin,
+            Math.Max(0f, Math.Min(DesiredWidth * 0.08f, (DesiredWidth - 1f) / 2f)));
+        float maxHeight = Math.Max(1f, uiHeight);
 
         if (_entries.Count == 0)
         {
@@ -249,8 +312,7 @@ internal sealed class ResultPanelElement : UIElement
 
         HashSet<CardKey> currentCards = _entries.Select(CardKeyFor).ToHashSet();
         _showAllSourceRoots.RemoveWhere(key => !currentCards.Contains(key));
-        foreach (CardKey key in _expandedProjectileRoots.Keys.Where(key => !currentCards.Contains(key)).ToArray())
-            _expandedProjectileRoots.Remove(key);
+        _expandedProjectileRoots.RemoveWhere(key => !currentCards.Contains(key.Card));
         _collapsedSourceRoots.RemoveWhere(key => !currentCards.Contains(key.Card));
         if (!_settings.ShowPersonalBreakdown)
         {
@@ -262,7 +324,7 @@ internal sealed class ResultPanelElement : UIElement
         foreach (ClientHistoryEntry entry in _entries)
             _cards.Add(BuildCard(entry));
 
-        _contentHeight = Margin + _cards.Sum(card => card.Height) + Math.Max(0, _cards.Count - 1) * 18f + Margin;
+        _contentHeight = _layoutMargin + _cards.Sum(card => card.Height) + Math.Max(0, _cards.Count - 1) * 18f + _layoutMargin;
         DesiredHeight = Math.Max(1f, Math.Min(_contentHeight, maxHeight));
         _maximumScrollOffset = Math.Max(0f, _contentHeight - DesiredHeight);
         _scrollOffset = Math.Clamp(_scrollOffset, 0f, _maximumScrollOffset);
@@ -272,50 +334,89 @@ internal sealed class ResultPanelElement : UIElement
     {
         _rankingLines.Clear();
         _sourceLines.Clear();
-        _metricLines.Clear();
         CardKey cardKey = CardKeyFor(entry);
 
         HashSet<DamageRootKey> currentRoots = entry.PrivateSources.Roots.Select(root => root.Key).ToHashSet();
-        if (_expandedProjectileRoots.TryGetValue(cardKey, out DamageRootKey expanded) && !currentRoots.Contains(expanded))
-            _expandedProjectileRoots.Remove(cardKey);
+        _expandedProjectileRoots.RemoveWhere(key => key.Card == cardKey && !currentRoots.Contains(key.Root));
         _collapsedSourceRoots.RemoveWhere(key => key.Card == cardKey && !currentRoots.Contains(key.Root));
 
         PublicResultSnapshot result = entry.Public;
-        if (_settings.ShowTeamTotal)
-            _metricLines.Add(new RenderLine(ClientRuntime.Text("UI.TeamTotal", "Team total damage"), FormatDamage(result.TeamDamage), 0, Color.White));
-        if (_settings.ShowBossBodyDamage)
-        {
-            string value = $"{FormatDamage(result.BossBodyDamage)}  ({Percent(result.BossBodyDamage, result.TeamDamage)})";
-            _metricLines.Add(new RenderLine(ClientRuntime.Text("UI.BossBodyDamage", "Damage to boss body"), value, 0, new Color(255, 180, 125)));
-        }
-        if (_settings.ShowUnattributedDamage && result.UnattributedDamage > 0)
-            _metricLines.Add(new RenderLine(ClientRuntime.Text("UI.Unattributed", "Unattributed/server-side damage"), FormatDamage(result.UnattributedDamage), 0, Color.Gray));
-        if (_settings.ShowDuration)
-            _metricLines.Add(new RenderLine(ClientRuntime.Text("UI.Duration", "Duration"), ClientRuntime.FormatDuration(result.DurationTicks), 0, new Color(190, 220, 255)));
-
         if (_settings.ShowRanking)
             BuildRanking(result, 4096);
         if (_settings.ShowPersonalBreakdown)
             BuildSources(entry.PrivateSources, 4096, cardKey);
 
-        bool showRanking = _rankingLines.Count > 0;
-        bool showSources = _sourceLines.Count > 0;
-        float height = (_settings.ShowBossHeader ? BossHeaderHeight(entry) : 0f) + _metricLines.Count * MetricHeight;
-        if (showRanking)
-            height += SectionHeadingHeight + _rankingLines.Count * RankingHeight;
-        if (showSources)
-            height += SectionHeadingHeight + _sourceLines.Count * SourceHeight;
+        List<CardSectionLayout> sections = [];
+        foreach (ResultPanelSection section in _sectionOrder)
+        {
+            CardSectionLayout? layout = BuildSection(section, result);
+            if (layout is not null)
+                sections.Add(layout);
+        }
+
+        float fixedTopHeight = _settings.ShowBossHeader
+            ? BossHeaderHeight(entry)
+            : FinalBlowOnlyHeight(entry);
+        float height = fixedTopHeight + sections.Sum(section => section.Height);
 
         return new CardLayout(
             cardKey,
             entry,
-            _metricLines.ToList(),
-            _rankingLines.ToList(),
-            _sourceLines.ToList(),
-            showRanking,
-            showSources,
+            sections,
             height);
     }
+
+    private CardSectionLayout? BuildSection(ResultPanelSection section, PublicResultSnapshot result)
+    {
+        switch (section)
+        {
+            case ResultPanelSection.TeamTotal when _settings.ShowTeamTotal:
+                return MetricSection(section, new RenderLine(
+                    ClientRuntime.Text("UI.TeamTotal", "Team total damage"),
+                    FormatDamage(result.TeamDamage),
+                    0,
+                    Color.White));
+
+            case ResultPanelSection.BossBodyDamage when _settings.ShowBossBodyDamage:
+                return MetricSection(section, new RenderLine(
+                    ClientRuntime.Text("UI.BossBodyDamage", "Damage to boss body"),
+                    $"{FormatDamage(result.BossBodyDamage)}  ({Percent(result.BossBodyDamage, result.TeamDamage)})",
+                    0,
+                    new Color(255, 180, 125)));
+
+            case ResultPanelSection.UnattributedDamage when _settings.ShowUnattributedDamage && result.UnattributedDamage > 0:
+                return MetricSection(section, new RenderLine(
+                    ClientRuntime.Text("UI.Unattributed", "Unattributed/server-side damage"),
+                    FormatDamage(result.UnattributedDamage),
+                    0,
+                    Color.Gray));
+
+            case ResultPanelSection.Duration when _settings.ShowDuration:
+                return MetricSection(section, new RenderLine(
+                    ClientRuntime.Text("UI.Duration", "Duration"),
+                    ClientRuntime.FormatDuration(result.DurationTicks),
+                    0,
+                    new Color(190, 220, 255)));
+
+            case ResultPanelSection.Ranking when _settings.ShowRanking && _rankingLines.Count > 0:
+                return new CardSectionLayout(
+                    section,
+                    _rankingLines.ToList(),
+                    SectionHeadingHeight + _rankingLines.Count * RankingHeight);
+
+            case ResultPanelSection.PersonalBreakdown when _settings.ShowPersonalBreakdown && _sourceLines.Count > 0:
+                return new CardSectionLayout(
+                    section,
+                    _sourceLines.ToList(),
+                    SectionHeadingHeight + _sourceLines.Count * SourceHeight);
+
+            default:
+                return null;
+        }
+    }
+
+    private static CardSectionLayout MetricSection(ResultPanelSection section, RenderLine line)
+        => new(section, [line], MetricHeight);
 
     private void BuildRanking(PublicResultSnapshot result, int maxLines)
     {
@@ -323,7 +424,7 @@ internal sealed class ResultPanelElement : UIElement
             return;
 
         List<PlayerResultRow> rows = result.Players.OrderByDescending(row => row.Damage).ToList();
-        if (rows.Count == 0)
+        if (rows.Count == 0 && result.OmittedPlayerCount <= 0)
         {
             _rankingLines.Add(new RenderLine(ClientRuntime.Text("UI.NoDamage", "No attributable player damage"), string.Empty, 0, Color.Gray));
             return;
@@ -331,7 +432,7 @@ internal sealed class ResultPanelElement : UIElement
 
         int configuredTop = Math.Min(_settings.RankingRows, rows.Count);
         int topCount = Math.Min(configuredTop, maxLines);
-        bool needsOther = rows.Count > topCount;
+        bool needsOther = rows.Count > topCount || result.OmittedPlayerCount > 0;
         if (needsOther && topCount >= maxLines && maxLines > 1)
             topCount = Math.Max(0, topCount - 1);
 
@@ -345,12 +446,17 @@ internal sealed class ResultPanelElement : UIElement
                 i == 0 ? new Color(255, 223, 120) : Color.White));
         }
 
-        if (rows.Count > topCount && _rankingLines.Count < maxLines)
+        if (needsOther && _rankingLines.Count < maxLines)
         {
             List<PlayerResultRow> omitted = rows.Skip(topCount).ToList();
-            long damage = omitted.Sum(row => row.Damage);
+            long damage = Math.Max(0, result.OmittedPlayerDamage);
+            foreach (PlayerResultRow row in omitted)
+                damage = damage > long.MaxValue - Math.Max(0, row.Damage)
+                    ? long.MaxValue
+                    : damage + Math.Max(0, row.Damage);
+            int omittedCount = Math.Max(0, result.OmittedPlayerCount) + omitted.Count;
             _rankingLines.Add(new RenderLine(
-                ClientRuntime.Text("UI.OtherPlayers", "Other {0} players", omitted.Count),
+                ClientRuntime.Text("UI.OtherPlayers", "Other {0} players", omittedCount),
                 $"{FormatDamage(damage)}  ({Percent(damage, result.TeamDamage)})",
                 0,
                 Color.Gray));
@@ -381,9 +487,7 @@ internal sealed class ResultPanelElement : UIElement
             return;
         }
 
-        if (_expandedProjectileRoots.TryGetValue(cardKey, out DamageRootKey expandedKey) &&
-            roots.All(root => root.Key != expandedKey))
-            _expandedProjectileRoots.Remove(cardKey);
+        _expandedProjectileRoots.RemoveWhere(key => key.Card == cardKey && roots.All(root => root.Key != key.Root));
 
         int configuredRootCount = Math.Min(_settings.SourceRootRows, roots.Count);
         bool hasAdditionalRoots = roots.Count > configuredRootCount;
@@ -395,11 +499,8 @@ internal sealed class ResultPanelElement : UIElement
         List<SourceBlock> candidates = (showAllSourceRoots ? roots : roots.Take(configuredRootCount))
             .Select(CreateSourceBlock)
             .ToList();
-        if (!showAllSourceRoots && _expandedProjectileRoots.TryGetValue(cardKey, out DamageRootKey hiddenExpandedRoot) &&
-            candidates.All(block => block.Root.Key != hiddenExpandedRoot))
-        {
-            _expandedProjectileRoots.Remove(cardKey);
-        }
+        if (!showAllSourceRoots)
+            _expandedProjectileRoots.RemoveWhere(key => key.Card == cardKey && candidates.All(block => block.Root.Key != key.Root));
 
         int rootListToggleReserve = showAllSourceRoots && hasAdditionalRoots && maxLines > 1 ? 1 : 0;
         int sourceContentLineLimit = maxLines - rootListToggleReserve;
@@ -443,22 +544,12 @@ internal sealed class ResultPanelElement : UIElement
         int[] projectileAllocations = new int[included.Count];
         int[] desiredProjectileLines = included.Select(block => GetDesiredDetailLineCount(block, cardKey)).ToArray();
 
-        int expandedIndex = _expandedProjectileRoots.TryGetValue(cardKey, out DamageRootKey expandedRoot)
-            ? included.FindIndex(block => expandedRoot == block.Root.Key)
-            : -1;
-        if (expandedIndex >= 0 && projectileLineBudget > 0)
-        {
-            int expandedAllocation = Math.Min(desiredProjectileLines[expandedIndex], projectileLineBudget);
-            projectileAllocations[expandedIndex] = expandedAllocation;
-            projectileLineBudget -= expandedAllocation;
-        }
-
-        // Give each other visible root one projectile row first, then distribute
-        // additional rows in damage order. A constrained root uses that row as an aggregate.
+        // Give every visible root one detail row first, then distribute the
+        // remaining budget in rounds. Expanded roots request all projectile rows,
+        // and multiple expanded weapons can therefore remain open independently
+        // without one monopolizing a constrained viewport.
         for (int i = 0; i < included.Count && projectileLineBudget > 0; i++)
         {
-            if (i == expandedIndex)
-                continue;
             if (desiredProjectileLines[i] <= 0)
                 continue;
             projectileAllocations[i]++;
@@ -471,8 +562,6 @@ internal sealed class ResultPanelElement : UIElement
             allocated = false;
             for (int i = 0; i < included.Count && projectileLineBudget > 0; i++)
             {
-                if (i == expandedIndex)
-                    continue;
                 if (projectileAllocations[i] >= desiredProjectileLines[i])
                     continue;
                 projectileAllocations[i]++;
@@ -552,7 +641,7 @@ internal sealed class ResultPanelElement : UIElement
         int debuffLines = block.Debuffs.Count;
         if (block.Projectiles.Count == 0)
             return debuffLines;
-        if (_expandedProjectileRoots.TryGetValue(cardKey, out DamageRootKey expanded) && expanded == block.Root.Key)
+        if (_expandedProjectileRoots.Contains(new SourceRootStateKey(cardKey, block.Root.Key)))
             return debuffLines + block.Projectiles.Count + 1;
         if (block.Projectiles.Count == 1)
             return debuffLines + 1;
@@ -620,7 +709,7 @@ internal sealed class ResultPanelElement : UIElement
             return;
         }
 
-        if (_expandedProjectileRoots.TryGetValue(cardKey, out DamageRootKey expanded) && expanded == block.Root.Key)
+        if (_expandedProjectileRoots.Contains(new SourceRootStateKey(cardKey, block.Root.Key)))
         {
             int expandedIndividualCount = Math.Min(block.Projectiles.Count, Math.Max(0, allocatedLines - 1));
             for (int i = 0; i < expandedIndividualCount; i++)
@@ -663,8 +752,62 @@ internal sealed class ResultPanelElement : UIElement
         }
     }
 
-    private static float BossHeaderHeight(ClientHistoryEntry entry)
-        => BossRowHeight * Math.Max(1, entry.Public.Bosses.Count);
+    private float BossHeaderHeight(ClientHistoryEntry entry)
+        => entry.Public.Bosses.Count == 0
+            ? BossRowHeight
+            : entry.Public.Bosses.Sum(boss => SingleBossRowHeight(boss));
+
+    private float SingleBossRowHeight(BossPresentation boss)
+        => BossRowHeight + (ShouldShowFinalBlow(boss) ? FinalBlowRowHeight : 0f);
+
+    private bool ShouldShowFinalBlow(BossPresentation boss)
+        => _settings.ShowFinalBlow &&
+           boss.Outcome == EncounterOutcome.Victory &&
+           boss.FinalBlowKind != FinalBlowKind.None &&
+           !string.IsNullOrEmpty(boss.FinalBlowPlayerName);
+
+    private float FinalBlowOnlyHeight(ClientHistoryEntry entry)
+        => entry.Public.Bosses.Count(ShouldShowFinalBlow) * FinalBlowRowHeight;
+
+    private string FinalBlowText(BossPresentation boss)
+    {
+        string kind = boss.FinalBlowKind == FinalBlowKind.DamageOverTime
+            ? ClientRuntime.Text("UI.FinalBlowByDamageOverTime", "damage over time")
+            : ClientRuntime.Text("UI.FinalBlowByDirectHit", "direct hit");
+        return ClientRuntime.Text(
+            "UI.FinalBlow",
+            "Final blow: {0}",
+            boss.FinalBlowPlayerName) + " · " + kind;
+    }
+
+    private void DrawFinalBlowOnly(
+        SpriteBatch spriteBatch,
+        ClientHistoryEntry entry,
+        float x,
+        float y,
+        float right,
+        float contentTop,
+        float contentBottom)
+    {
+        foreach (BossPresentation boss in entry.Public.Bosses)
+        {
+            if (!ShouldShowFinalBlow(boss))
+                continue;
+
+            if (IsFullyVisible(y, FinalBlowRowHeight, contentTop, contentBottom))
+            {
+                string text = ClientRuntime.ResolveBossName(boss) + " · " + FinalBlowText(boss);
+                DrawText(
+                    spriteBatch,
+                    TrimToWidth(text, Math.Max(0f, ContentRightAtY(right, y, FinalBlowRowHeight) - x), 0.8f),
+                    new Vector2(x, y),
+                    new Color(160, 236, 190),
+                    0.8f);
+            }
+
+            y += FinalBlowRowHeight;
+        }
+    }
 
     private void DrawBossHeader(
         SpriteBatch spriteBatch,
@@ -682,7 +825,8 @@ internal sealed class ResultPanelElement : UIElement
 
         foreach (BossPresentation boss in bosses)
         {
-            if (IsFullyVisible(y, BossRowHeight, contentTop, contentBottom))
+            float rowHeight = SingleBossRowHeight(boss);
+            if (IsFullyVisible(y, rowHeight, contentTop, contentBottom))
             {
                 bool drawPortrait = boss.PortraitNpcType > NPCID.None && right - x >= 220f;
                 if (drawPortrait)
@@ -691,7 +835,8 @@ internal sealed class ResultPanelElement : UIElement
                 float textX = drawPortrait ? x + 60f : x;
                 string bossName = ClientRuntime.ResolveBossName(boss);
                 string outcome = ClientRuntime.Text($"Outcome.{boss.Outcome}", boss.Outcome.ToString());
-                DrawText(spriteBatch, TrimToWidth(bossName, Math.Max(0f, right - textX), 0.98f), new Vector2(textX, y + 2f), Color.White, 0.98f);
+                float titleRight = ContentRightAtY(right, y + 2f, MetricHeight);
+                DrawText(spriteBatch, TrimToWidth(bossName, Math.Max(0f, titleRight - textX), 0.98f), new Vector2(textX, y + 2f), Color.White, 0.98f);
 
                 string damage = _settings.ShowBossBodyDamage
                     ? ClientRuntime.Text(
@@ -700,27 +845,40 @@ internal sealed class ResultPanelElement : UIElement
                         FormatDamage(boss.BodyDamage),
                         Percent(boss.BodyDamage, result.TeamDamage))
                     : string.Empty;
-                float damageWidth = Measure(damage, 0.8f);
-                float outcomeWidth = Math.Max(0f, right - textX - (damageWidth > 0f ? damageWidth + 18f : 0f));
+                float availableWidth = Math.Max(0f, right - textX);
+                string fittedDamage = TrimToWidth(damage, availableWidth * 0.58f, 0.8f);
+                float damageWidth = Measure(fittedDamage, 0.8f);
+                float outcomeWidth = Math.Max(0f, availableWidth - (damageWidth > 0f ? damageWidth + 12f : 0f));
                 DrawText(spriteBatch, TrimToWidth(outcome, outcomeWidth, 0.82f), new Vector2(textX, y + 29f), OutcomeColor(boss.Outcome), 0.82f);
-                if (!string.IsNullOrEmpty(damage))
-                    DrawText(spriteBatch, TrimToWidth(damage, Math.Max(0f, right - textX), 0.8f), new Vector2(right - Math.Min(damageWidth, right - textX), y + 29f), new Color(255, 180, 125), 0.8f);
+                if (!string.IsNullOrEmpty(fittedDamage))
+                    DrawText(spriteBatch, fittedDamage, new Vector2(right - damageWidth, y + 29f), new Color(255, 180, 125), 0.8f);
+
+                if (ShouldShowFinalBlow(boss))
+                {
+                    string finalBlow = FinalBlowText(boss);
+                    DrawText(spriteBatch, TrimToWidth(finalBlow, Math.Max(0f, right - textX), 0.8f), new Vector2(textX, y + 45f), new Color(160, 236, 190), 0.8f);
+                }
             }
 
-            y += BossRowHeight;
+            y += rowHeight;
         }
     }
 
     private void DrawPanel(SpriteBatch spriteBatch, Rectangle panel)
     {
+        if (panel.Width <= 0 || panel.Height <= 0)
+            return;
+
         Texture2D pixel = TextureAssets.MagicPixel.Value;
         Color background = new Color(15, 22, 34) * (_backgroundOpacity * Opacity);
         Color border = new Color(78, 144, 190) * Opacity;
+        int horizontalBorder = Math.Min(2, panel.Height);
+        int verticalBorder = Math.Min(2, panel.Width);
         spriteBatch.Draw(pixel, panel, background);
-        spriteBatch.Draw(pixel, new Rectangle(panel.X, panel.Y, panel.Width, 2), border);
-        spriteBatch.Draw(pixel, new Rectangle(panel.X, panel.Bottom - 2, panel.Width, 2), border);
-        spriteBatch.Draw(pixel, new Rectangle(panel.X, panel.Y, 2, panel.Height), border);
-        spriteBatch.Draw(pixel, new Rectangle(panel.Right - 2, panel.Y, 2, panel.Height), border);
+        spriteBatch.Draw(pixel, new Rectangle(panel.X, panel.Y, panel.Width, horizontalBorder), border);
+        spriteBatch.Draw(pixel, new Rectangle(panel.X, panel.Bottom - horizontalBorder, panel.Width, horizontalBorder), border);
+        spriteBatch.Draw(pixel, new Rectangle(panel.X, panel.Y, verticalBorder, panel.Height), border);
+        spriteBatch.Draw(pixel, new Rectangle(panel.Right - verticalBorder, panel.Y, verticalBorder, panel.Height), border);
     }
 
     private void DrawCardSeparator(
@@ -745,12 +903,12 @@ internal sealed class ResultPanelElement : UIElement
             return;
 
         Texture2D pixel = TextureAssets.MagicPixel.Value;
-        float trackHeight = Math.Max(1f, panel.Height - Margin * 2f);
+        float trackHeight = Math.Max(1f, panel.Height - _layoutMargin * 2f);
         float thumbHeight = Math.Max(24f, trackHeight * Math.Min(1f, DesiredHeight / _contentHeight));
         float travel = Math.Max(0f, trackHeight - thumbHeight);
         float progress = _maximumScrollOffset <= 0f ? 0f : _scrollOffset / _maximumScrollOffset;
-        int trackX = panel.Right - 9;
-        int trackY = panel.Y + (int)Margin;
+        int trackX = Math.Max(panel.X + 1, panel.Right - 9);
+        int trackY = panel.Y + (int)_layoutMargin;
         int thumbY = trackY + (int)Math.Round(travel * progress);
 
         spriteBatch.Draw(pixel, new Rectangle(trackX, trackY, 3, (int)trackHeight), new Color(45, 65, 84) * Opacity);
@@ -762,7 +920,8 @@ internal sealed class ResultPanelElement : UIElement
 
     private void DrawLine(SpriteBatch spriteBatch, RenderLine line, float x, float right, float y, float scale)
     {
-        float left = x + line.Indent * 20f;
+        right = ContentRightAtY(right, y, MetricHeight);
+        float left = x + IndentOffset(line.Indent, right - x);
         float totalWidth = right - left;
         if (totalWidth <= 0f)
             return;
@@ -783,7 +942,23 @@ internal sealed class ResultPanelElement : UIElement
     private void DrawText(SpriteBatch spriteBatch, string text, Vector2 position, Color color, float scale)
         => Utils.DrawBorderString(spriteBatch, text, position, color * Opacity, scale);
 
+    private float ContentRightAtY(float right, float y, float height)
+    {
+        CalculatedStyle panel = GetDimensions();
+        float size = Math.Max(1f, Math.Min(CloseButtonSize, DesiredWidth - 4f));
+        float top = panel.Y + CloseButtonInset;
+        if (y + height <= top || y >= top + size)
+            return right;
+
+        float inset = Math.Min(CloseButtonInset, Math.Max(2f, (DesiredWidth - size) / 2f));
+        float buttonLeft = panel.X + Math.Max(0f, DesiredWidth - size - inset);
+        return Math.Min(right, buttonLeft - 6f);
+    }
+
     private static float Measure(string text, float scale) => FontAssets.MouseText.Value.MeasureString(text).X * scale;
+
+    private static float IndentOffset(int indent, float availableWidth)
+        => Math.Min(Math.Max(0, indent) * 20f, Math.Max(0f, availableWidth - 1f));
 
     private static string TrimToWidth(string text, float width, float scale)
     {
@@ -796,10 +971,25 @@ internal sealed class ResultPanelElement : UIElement
         if (Measure(ellipsis, scale) > width)
             return string.Empty;
 
-        while (text.Length > 0 && Measure(text + ellipsis, scale) > width)
-            text = text[..^1];
-        return text + ellipsis;
+        int[] textElements = System.Globalization.StringInfo.ParseCombiningCharacters(text);
+        int low = 0;
+        int high = textElements.Length;
+        while (low < high)
+        {
+            int count = (low + high + 1) / 2;
+            int end = count == textElements.Length ? text.Length : textElements[count];
+            if (Measure(text[..end] + ellipsis, scale) <= width)
+                low = count;
+            else
+                high = count - 1;
+        }
+
+        int fittedEnd = low == textElements.Length ? text.Length : textElements[low];
+        return text[..fittedEnd] + ellipsis;
     }
+
+    internal static string FitTextToWidth(string text, float width, float scale)
+        => TrimToWidth(text, width, scale);
 
     private void DrawNpcPortrait(SpriteBatch spriteBatch, int npcType, Rectangle bounds)
     {
@@ -875,11 +1065,12 @@ internal sealed class ResultPanelElement : UIElement
     private sealed record CardLayout(
         CardKey Key,
         ClientHistoryEntry Entry,
-        List<RenderLine> Metrics,
-        List<RenderLine> Ranking,
-        List<RenderLine> Sources,
-        bool ShowRanking,
-        bool ShowSources,
+        List<CardSectionLayout> Sections,
+        float Height);
+
+    private sealed record CardSectionLayout(
+        ResultPanelSection Kind,
+        List<RenderLine> Lines,
         float Height);
 
     private readonly record struct CardKey(long EncounterId, int BossOccurrence, string BossKey);

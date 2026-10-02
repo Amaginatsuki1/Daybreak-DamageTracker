@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\..\Client\ClientRuntime.cs" Link="Production\ClientRuntime.cs" />
+    <Compile Include="..\..\Client\ClientResultHistory.cs" Link="Production\ClientResultHistory.cs" />
+    <Compile Include="..\..\Client\ChatSummaryBatcher.cs" Link="Production\ChatSummaryBatcher.cs" />
+    <Compile Include="..\..\Client\ResultPanelSectionOrder.cs" Link="Production\ResultPanelSectionOrder.cs" />
+    <Compile Include="..\..\Common\Data\SourceTree.cs" Link="Production\SourceTree.cs" />
+    <Compile Include="..\..\Common\Data\PublicSnapshots.cs" Link="Production\PublicSnapshots.cs" />
+    <Compile Include="..\..\Common\Systems\NpcInstanceKey.cs" Link="Production\NpcInstanceKey.cs" />
+    <Compile Include="..\..\Common\Systems\TargetClassifier.cs" Link="Production\TargetClassifier.cs" />
+    <Compile Include="..\..\Common\Systems\PrivateSourceAttributionPolicy.cs" Link="Production\PrivateSourceAttributionPolicy.cs" />
+    <Compile Include="..\..\Common\NPCs\DamageTrackingGlobalNpc.cs" Link="Production\DamageTrackingGlobalNpc.cs" />
+    <Compile Include="..\..\Common\NPCs\DotTrackingGlobalNpc.cs" Link="Production\DotTrackingGlobalNpc.cs" />
+    <Compile Include="..\..\Common\Systems\DotDamageAttributionPolicy.cs" Link="Production\DotDamageAttributionPolicy.cs" />
+    <Compile Include="..\..\Common\Networking\PacketIO.cs" Link="Production\PacketIO.cs" />
+    <Compile Include="..\..\Common\Networking\BoundedStringIO.cs" Link="Production\BoundedStringIO.cs" />
+    <Compile Include="..\..\Common\Networking\ResultDeliveryProjectionPolicy.cs" Link="Production\ResultDeliveryProjectionPolicy.cs" />
+  </ItemGroup>
+</Project>

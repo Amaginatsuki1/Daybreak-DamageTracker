@@ -6,9 +6,17 @@ internal static class BossAttributionPolicy
         IEnumerable<T> candidates,
         int npcType,
         int rootNpcType,
-        Func<T, IReadOnlySet<int>> associatedTypes)
+        Func<T, IReadOnlySet<int>> associatedTypes,
+        string exactOwnerKey = "",
+        Func<T, string>? candidateKey = null)
         where T : class
     {
+        if (!string.IsNullOrWhiteSpace(exactOwnerKey) && candidateKey is not null)
+        {
+            return candidates.FirstOrDefault(candidate =>
+                candidateKey(candidate).Equals(exactOwnerKey, StringComparison.Ordinal));
+        }
+
         T? match = null;
         foreach (T candidate in candidates)
         {
@@ -28,7 +36,9 @@ internal static class BossAttributionPolicy
         IReadOnlySet<int> bodyTypes,
         IReadOnlySet<int> excludedTypes,
         int npcType,
-        int rootNpcType)
-        => Matches(bodyTypes, npcType, rootNpcType) &&
+        int rootNpcType,
+        string exactSpawnOwnerKey = "")
+        => string.IsNullOrWhiteSpace(exactSpawnOwnerKey) &&
+           Matches(bodyTypes, npcType, rootNpcType) &&
            !Matches(excludedTypes, npcType, rootNpcType);
 }

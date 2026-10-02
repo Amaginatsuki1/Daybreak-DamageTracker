@@ -63,13 +63,15 @@ internal sealed class DotDamageSystem : ModSystem
 
     internal static void ReceivePrivateDamage(
         int npcIndex,
+        long npcSpawnSerial,
         int npcType,
         int rootNpcType,
         int buffType,
         int damage,
-        DamageRootKey? serverRoot)
+        DamageRootKey? serverRoot,
+        string exactOwnerBossKey)
     {
-        if (Main.dedServ || damage <= 0 || !IsKnownDotBuff(buffType))
+        if (Main.dedServ || npcSpawnSerial <= 0 || damage <= 0 || !IsKnownDotBuff(buffType))
             return;
 
         DamageRootKey root = serverRoot ?? new DamageRootKey(DamageRootKind.Unclassified, 0);
@@ -77,10 +79,9 @@ internal sealed class DotDamageSystem : ModSystem
         if (preferLocalSource && npcIndex >= 0 && npcIndex < Main.maxNPCs)
         {
             NPC npc = Main.npc[npcIndex];
-            // A lethal DoT update can deactivate the NPC before this owner-only
-            // packet is processed. The same NPC object still owns its per-entity
-            // source registry; a reused slot creates a fresh object/registry.
-            if (npc.type == npcType)
+            // A lethal update may deactivate this NPC before delivery, but a reused
+            // slot (even of the same type) must never supply the old instance's source.
+            if (npc.type == npcType && DamageTrackingGlobalNpc.GetSpawnSerial(npc) == npcSpawnSerial)
             {
                 DotTrackingGlobalNpc tracking = npc.GetGlobalNPC<DotTrackingGlobalNpc>();
                 if (tracking.TryGetLocalSource(
@@ -94,7 +95,12 @@ internal sealed class DotDamageSystem : ModSystem
         }
 
         ClientRuntime.RecordPrivateDamage(
-            new TargetSnapshot(true, npcType, rootNpcType),
+            new TargetSnapshot(
+                true,
+                npcType,
+                rootNpcType,
+                new NpcInstanceKey(npcIndex, npcSpawnSerial),
+                exactOwnerBossKey),
             root,
             new DamageLeafKey(DamageLeafKind.Debuff, buffType),
             damage);
@@ -173,13 +179,14 @@ internal sealed class DotDamageSystem : ModSystem
         if (Main.netMode != NetmodeID.MultiplayerClient)
         {
             DotDamageOwner? owner = EncounterSystem.CaptureDotOwner(ownerIndex);
-            if (owner.HasValue)
-                tracking.RegisterServerExtension(type, previousTime, currentTime, owner.Value, now);
+            tracking.RegisterServerExtension(type, previousTime, currentTime, owner, now);
         }
 
-        if (!Main.dedServ && _application is not null && ownerIndex == Main.myPlayer)
+        if (!Main.dedServ)
         {
-            DamageRootKey root = ResolveLocalRoot(_application, type);
+            DamageRootKey? root = _application is not null && ownerIndex == Main.myPlayer
+                ? ResolveLocalRoot(_application, type)
+                : null;
             tracking.RegisterLocalExtension(type, previousTime, currentTime, root, now);
         }
     }
@@ -243,6 +250,19 @@ internal sealed class DotDamageSystem : ModSystem
 
         if (assigned < actualDamage)
             EncounterSystem.RecordDotDamage(null, target, actualDamage - assigned);
+
+        if (lifeBefore > 0 && lifeTarget.life <= 0)
+        {
+            FinalBlowOwner? dominantOwner = FinalBlowPolicy.FindDominantDotOwner(shares.Select(share =>
+            {
+                ActiveDotEffect effect = effectsByKey[share.Id];
+                FinalBlowOwner? owner = effect.Owner.HasValue
+                    ? new FinalBlowOwner(effect.Owner.Value.Key, effect.Owner.Value.PlayerName)
+                    : null;
+                return (owner, share.Damage);
+            }));
+            EncounterSystem.RecordDotFinalBlow(target, dominantOwner);
+        }
     }
 
     private static List<ActiveDotEffect> CaptureActiveEffects(

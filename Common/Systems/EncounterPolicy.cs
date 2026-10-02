@@ -23,8 +23,59 @@ internal readonly record struct UnresolvedBossFacts(
     bool OtherBossAlreadyResolved,
     bool AllowSiblingBoundary);
 
+internal readonly record struct InactiveSiblingGroupFacts(
+    bool EncounterStarted,
+    bool AnotherGroupActive,
+    bool GroupHasActiveParticipant,
+    bool InactiveGraceElapsed,
+    bool HasControllerKillCandidate,
+    UnresolvedBossFacts Boundary);
+
 internal static class EncounterPolicy
 {
+    public static bool CanRecordDamage(bool targetEligible, int actualDamage, bool hasUniqueBossOwner)
+        => targetEligible && actualDamage > 0 && hasUniqueBossOwner;
+
+    public static bool ShouldReconcileDamagePath(
+        long lastTick,
+        long currentTick,
+        long lastSpawnGeneration,
+        long currentSpawnGeneration)
+        => lastTick != currentTick || lastSpawnGeneration != currentSpawnGeneration;
+
+    public static bool AllCurrentParticipantsDead<T>(
+        IEnumerable<T> participants,
+        Func<T, bool> isCurrent,
+        Func<T, bool> isDead)
+    {
+        bool anyCurrent = false;
+        foreach (T participant in participants)
+        {
+            if (!isCurrent(participant))
+                continue;
+            anyCurrent = true;
+            if (!isDead(participant))
+                return false;
+        }
+        return anyCurrent;
+    }
+
+    public static bool HasNoCurrentParticipants<T>(
+        IReadOnlyCollection<T> participants,
+        Func<T, bool> isCurrent)
+        => participants.Count > 0 && !participants.Any(isCurrent);
+
+    public static bool ShouldRecoverPartyWipe(
+        bool partyWipeObserved,
+        bool continueAfterPartyWipe,
+        bool livingPlayerEngaged)
+        => partyWipeObserved && continueAfterPartyWipe && livingPlayerEngaged;
+
+    public static bool CanAssociateNpcTargetWithGroup(
+        bool alreadyKnownParticipant,
+        bool targetWithinEncounterWindow)
+        => alreadyKnownParticipant || targetWithinEncounterWindow;
+
     public static void ReleaseAbsentResolvedBossKeys(
         HashSet<string> heldKeys,
         IEnumerable<string> activeKeys)
@@ -42,17 +93,24 @@ internal static class EncounterPolicy
     public static bool CanUseEntryDownedSignal(string bossKey, string encounterGroupKey)
         => string.Equals(bossKey, encounterGroupKey, StringComparison.Ordinal);
 
+    public static bool CanUseDisappearanceBoundary(
+        string bossKey,
+        string encounterGroupKey,
+        bool allowGroupedDisappearanceBoundary)
+        => allowGroupedDisappearanceBoundary || CanUseEntryDownedSignal(bossKey, encounterGroupKey);
+
     public static bool CanUseAutomaticBodyFinal(
         string bossKey,
         string encounterGroupKey,
         bool finishOnBodyDeath,
         bool continueAfterPartyWipe,
         bool hasDownedSignal,
-        bool downedAtArm)
+        bool downedAtArm,
+        bool forceWithoutDownedTransition = false)
         => finishOnBodyDeath &&
            !continueAfterPartyWipe &&
            CanUseEntryDownedSignal(bossKey, encounterGroupKey) &&
-           (!hasDownedSignal || downedAtArm);
+           (forceWithoutDownedTransition || !hasDownedSignal || downedAtArm);
 
     public static bool ShouldResolveVictory(
         bool hasActiveKeepAliveNpc,
@@ -117,6 +175,49 @@ internal static class EncounterPolicy
             return EncounterOutcome.Escaped;
 
         if (facts.GenericFallbackExpired)
+            return EncounterOutcome.Escaped;
+
+        return null;
+    }
+
+    public static EncounterOutcome? ResolveInactiveSiblingGroup(InactiveSiblingGroupFacts facts)
+    {
+        if (!facts.EncounterStarted ||
+            !facts.AnotherGroupActive ||
+            facts.GroupHasActiveParticipant)
+        {
+            return null;
+        }
+
+        // Preserve the same victory-before-wipe/escape contract as the global
+        // NPC-free boundary. A real controller OnKill gets its short confirmation
+        // window even while an unrelated Boss remains alive.
+        if (AutomaticFinalizationPolicy.ResolveBoundary(
+                facts.HasControllerKillCandidate,
+                foreignEncounterStarted: false) == AutomaticFinalizationDecision.Pending)
+        {
+            return null;
+        }
+
+        // A simultaneous sibling can briefly have no active NPC while replacing a
+        // controller or moving between phases. Give it the same synchronization window
+        // as the session-wide NPC-free transition before treating disappearance/wipe as
+        // a terminal boundary.
+        if (!facts.InactiveGraceElapsed)
+            return null;
+
+        UnresolvedBossFacts boundary = facts.Boundary;
+        if (boundary.HasNoActivePlayers)
+            return boundary.PartyWipeObserved ? EncounterOutcome.Defeat : EncounterOutcome.Escaped;
+
+        if (boundary.PartyWipeObserved)
+            return boundary.ContinueAfterPartyWipe ? null : EncounterOutcome.Defeat;
+
+        // Another Boss group is still active, so session-wide engagement, sibling,
+        // foreign-encounter and generic-fallback signals cannot describe this absent
+        // group. Only its own observed disappearance may close it; configured NPC-free
+        // cinematics and grouped gauntlets therefore remain pending.
+        if (boundary.ObservedNonKillDisappearance && boundary.AllowDisappearanceBoundary)
             return EncounterOutcome.Escaped;
 
         return null;

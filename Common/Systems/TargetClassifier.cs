@@ -1,6 +1,12 @@
 namespace DaybreakDamageTracker.Common.Systems;
 
-internal readonly record struct TargetSnapshot(bool Eligible, int NpcType, int RootNpcType);
+internal readonly record struct TargetSnapshot(
+    bool Eligible,
+    int NpcType,
+    int RootNpcType,
+    NpcInstanceKey Instance = default,
+    string ExactOwnerBossKey = "",
+    NpcInstanceKey RootInstance = default);
 
 internal static class TargetClassifier
 {

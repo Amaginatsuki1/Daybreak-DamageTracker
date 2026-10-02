@@ -1,0 +1,35 @@
+name: Logic tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  logic-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Run deterministic logic tests
+        run: dotnet run --project tests/DaybreakDamageTracker.LogicTests/DaybreakDamageTracker.LogicTests.csproj --configuration Release
+      - name: Replay client NPC identity and packet ordering
+        run: dotnet run --project tests/DaybreakDamageTracker.ClientIdentityTests/DaybreakDamageTracker.ClientIdentityTests.csproj --configuration Release
+
+  isolated-load-ownership:
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify process ownership without launching tModLoader
+        shell: pwsh
+        run: ./tests/test-isolated-load-ownership.ps1

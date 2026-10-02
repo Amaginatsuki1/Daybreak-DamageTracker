@@ -1,4 +1,5 @@
 using DaybreakDamageTracker.Common.Config;
+using DaybreakDamageTracker.Common.NPCs;
 
 namespace DaybreakDamageTracker.Common.Bosses;
 
@@ -11,12 +12,16 @@ internal sealed class BossDescriptor
     public string DisplayName { get; set; } = string.Empty;
     public int PortraitNpcType { get; set; }
     public HashSet<int> BodyNpcTypes { get; set; } = [];
+    public HashSet<int> ControllerNpcTypes { get; set; } = [];
     public HashSet<int> KeepAliveNpcTypes { get; set; } = [];
     public HashSet<int> FinalNpcTypes { get; set; } = [];
     public HashSet<int> ExcludedBodyNpcTypes { get; set; } = [];
     public Func<bool>? Downed { get; set; }
     public bool FinishOnBodyDeathWhenNoParticipants { get; set; }
     public bool ContinueAfterPartyWipe { get; set; }
+    public bool ForceAutomaticFinalization { get; set; }
+    public bool HasExplicitServerOverride { get; set; }
+    public bool AllowGroupedDisappearanceBoundary { get; set; }
 
     public BossDescriptor Clone() => new()
     {
@@ -27,12 +32,16 @@ internal sealed class BossDescriptor
         DisplayName = DisplayName,
         PortraitNpcType = PortraitNpcType,
         BodyNpcTypes = [.. BodyNpcTypes],
+        ControllerNpcTypes = [.. ControllerNpcTypes],
         KeepAliveNpcTypes = [.. KeepAliveNpcTypes],
         FinalNpcTypes = [.. FinalNpcTypes],
         ExcludedBodyNpcTypes = [.. ExcludedBodyNpcTypes],
         Downed = Downed,
         FinishOnBodyDeathWhenNoParticipants = FinishOnBodyDeathWhenNoParticipants,
-        ContinueAfterPartyWipe = ContinueAfterPartyWipe
+        ContinueAfterPartyWipe = ContinueAfterPartyWipe,
+        ForceAutomaticFinalization = ForceAutomaticFinalization,
+        HasExplicitServerOverride = HasExplicitServerOverride,
+        AllowGroupedDisappearanceBoundary = AllowGroupedDisappearanceBoundary
     };
 }
 
@@ -42,6 +51,10 @@ internal static class BossCatalog
     private static readonly Dictionary<int, List<CatalogEntry>> EntriesByNpcType = [];
     private static readonly Dictionary<string, CatalogEntry> EntriesByKey = new(StringComparer.Ordinal);
     private static List<RuntimeOverride> _overrides = [];
+    private static long _calamityBossRushQueryTick = -1;
+    private static bool _cachedCalamityBossRushActive;
+    private static int _calamityBossRushQueryFailures;
+    private static long _calamityBossRushNextRetryTick;
 
     public static void LoadBossChecklist(Mod requestingMod)
     {
@@ -123,6 +136,7 @@ internal static class BossCatalog
                 PortraitNpcType = ResolveSingle(config.PortraitNpcType),
                 TriggerNpcTypes = ResolveMany(config.TriggerNpcTypes),
                 BodyNpcTypes = ResolveMany(config.BodyNpcTypes),
+                ControllerNpcTypes = ResolveMany(config.ControllerNpcTypes),
                 AddNpcTypes = ResolveMany(config.AddNpcTypes),
                 BarrierNpcTypes = ResolveMany(config.BarrierNpcTypes),
                 KeepAliveNpcTypes = ResolveMany(config.KeepAliveNpcTypes),
@@ -141,8 +155,12 @@ internal static class BossCatalog
     public static List<BossDescriptor> ScanActiveBosses()
     {
         Dictionary<string, BossDescriptor> found = new(StringComparer.Ordinal);
+        List<NPC> fallbackCandidates = [];
+        List<NPC> activeNpcs = [];
+        foreach (NPC activeNpc in Main.ActiveNPCs)
+            activeNpcs.Add(activeNpc);
 
-        foreach (NPC npc in Main.ActiveNPCs)
+        foreach (NPC npc in activeNpcs)
         {
             bool matchedCatalog = false;
             bool matchedOverride = false;
@@ -178,22 +196,41 @@ internal static class BossCatalog
             }
 
             if (npc.boss && !matchedCatalog && !matchedOverride && !managedByTypedAdapter)
+                fallbackCandidates.Add(npc);
+        }
+
+        // Build unmatched roots before their dependent segments so the result is
+        // independent of NPC slot iteration order.
+        foreach (NPC fallback in fallbackCandidates.Where(value => !HasRealLifeDependency(value)))
+            AddOrMergeFallback(found, fallback, fallback.type);
+
+        foreach (NPC segment in fallbackCandidates.Where(HasRealLifeDependency))
+        {
+            if (!TryGetRealLifeController(segment, out NPC controller))
+                continue;
+            List<string> ownerKeys = BossFallbackPolicy.FindOwnerKeys(
+                found.Values,
+                controller.type,
+                descriptor => descriptor.Key,
+                DescriptorManagesNpcType);
+            if (ownerKeys.Count == 1)
             {
-                string key = $"npc:{npc.type}";
-                found.TryAdd(key, new BossDescriptor
-                {
-                    Key = key,
-                    EncounterGroupKey = key,
-                    DisplayNameLocalizationKey = Lang.GetNPCName(npc.type).Key,
-                    DisplayNameNpcType = npc.type,
-                    DisplayName = npc.FullName,
-                    PortraitNpcType = npc.type,
-                    BodyNpcTypes = [npc.type],
-                    KeepAliveNpcTypes = [npc.type],
-                    FinalNpcTypes = npc.type == NPCID.MoonLordCore ? [NPCID.MoonLordCore] : [],
-                    FinishOnBodyDeathWhenNoParticipants = true
-                });
+                string ownerKey = ownerKeys[0];
+                MergeDependentType(found[ownerKey], controller.type, segment.type);
+                continue;
             }
+
+            // A controller shared by multiple catalog entries is ambiguous, but the
+            // dependent still cannot be a third independent Boss result.
+            if (ownerKeys.Count > 1)
+                continue;
+
+            // A configured adapter may intentionally treat the controller as only a
+            // keep-alive/add form. Do not bypass that adapter with a generic result.
+            if (_overrides.Any(runtime => runtime.ManagesNpcType(controller.type)))
+                continue;
+
+            AddOrMergeFallback(found, controller, segment.type);
         }
 
         foreach (BossDescriptor descriptor in found.Values)
@@ -204,7 +241,121 @@ internal static class BossCatalog
                 ApplyOverride(descriptor, runtime);
         }
 
+        if (found.Count > 0 && IsCalamityBossRushActive())
+        {
+            foreach (BossDescriptor descriptor in found.Values)
+                descriptor.ForceAutomaticFinalization = true;
+        }
+
         return found.Values.ToList();
+    }
+
+    internal static bool IsCalamityBossRushActive()
+    {
+        long nowTick = (long)Main.GameUpdateCount;
+        if (_calamityBossRushQueryTick == nowTick)
+            return _cachedCalamityBossRushActive;
+
+        _calamityBossRushQueryTick = nowTick;
+        _cachedCalamityBossRushActive = false;
+        if (!ModLoader.TryGetMod("CalamityMod", out Mod? calamity) ||
+            nowTick < _calamityBossRushNextRetryTick)
+            return false;
+
+        try
+        {
+            _cachedCalamityBossRushActive = calamity.Call("GetDifficultyActive", "boss rush") is bool active && active;
+            _calamityBossRushQueryFailures = 0;
+            _calamityBossRushNextRetryTick = 0;
+            return _cachedCalamityBossRushActive;
+        }
+        catch (Exception exception)
+        {
+            _calamityBossRushQueryFailures = Math.Min(16, _calamityBossRushQueryFailures + 1);
+            long retryDelayTicks = CalamityCompatibilityPolicy.BossRushQueryRetryDelayTicks(
+                _calamityBossRushQueryFailures);
+            _calamityBossRushNextRetryTick = nowTick + retryDelayTicks;
+            DaybreakDamageTrackerMod.Instance.Logger.Warn(
+                $"Calamity Boss Rush query failed; ordinary lifecycle detection remains active " +
+                $"and the integration will retry in {retryDelayTicks} ticks. {exception}");
+            return false;
+        }
+    }
+
+    private static bool HasRealLifeDependency(NPC npc)
+        => BossFallbackPolicy.HasRealLifeDependency(npc.whoAmI, npc.realLife, Main.maxNPCs);
+
+    private static bool TryGetRealLifeController(NPC npc, out NPC controller)
+    {
+        if (!HasRealLifeDependency(npc))
+        {
+            controller = null!;
+            return false;
+        }
+
+        controller = Main.npc[npc.realLife];
+        return controller.whoAmI == npc.realLife &&
+               BossFallbackPolicy.CanUseRealLifeController(
+                   controller.active,
+                   DamageTrackingGlobalNpc.GetSpawnSerial(controller),
+                   DamageTrackingGlobalNpc.GetSpawnSerial(npc));
+    }
+
+    internal static bool DescriptorManagesNpcType(BossDescriptor descriptor, int npcType)
+        => descriptor.BodyNpcTypes.Contains(npcType) ||
+           descriptor.ControllerNpcTypes.Contains(npcType) ||
+           descriptor.ExcludedBodyNpcTypes.Contains(npcType) ||
+           descriptor.KeepAliveNpcTypes.Contains(npcType) ||
+           descriptor.FinalNpcTypes.Contains(npcType);
+
+    private static void MergeDependentType(BossDescriptor descriptor, int controllerType, int dependentType)
+    {
+        BossFallbackRole roles = BossFallbackPolicy.InheritDependentRoles(
+            descriptor.BodyNpcTypes.Contains(controllerType),
+            descriptor.KeepAliveNpcTypes.Contains(controllerType),
+            descriptor.ExcludedBodyNpcTypes.Contains(controllerType));
+
+        if ((roles & BossFallbackRole.ExcludedBody) != 0)
+        {
+            descriptor.ExcludedBodyNpcTypes.Add(dependentType);
+            descriptor.BodyNpcTypes.Remove(dependentType);
+        }
+        else if ((roles & BossFallbackRole.Body) != 0)
+        {
+            descriptor.BodyNpcTypes.Add(dependentType);
+        }
+
+        if ((roles & BossFallbackRole.KeepAlive) != 0)
+            descriptor.KeepAliveNpcTypes.Add(dependentType);
+    }
+
+    private static void AddOrMergeFallback(
+        Dictionary<string, BossDescriptor> found,
+        NPC controller,
+        int observedType)
+    {
+        string key = BossFallbackPolicy.FallbackKey(controller.type);
+        if (!found.TryGetValue(key, out BossDescriptor? descriptor))
+        {
+            descriptor = new BossDescriptor
+            {
+                Key = key,
+                EncounterGroupKey = key,
+                DisplayNameLocalizationKey = Lang.GetNPCName(controller.type).Key,
+                DisplayNameNpcType = controller.type,
+                DisplayName = controller.FullName,
+                PortraitNpcType = controller.type,
+                BodyNpcTypes = [controller.type],
+                ControllerNpcTypes = [controller.type],
+                KeepAliveNpcTypes = [controller.type],
+                FinalNpcTypes = controller.type == NPCID.MoonLordCore ? [NPCID.MoonLordCore] : [],
+                FinishOnBodyDeathWhenNoParticipants = true
+            };
+            found.Add(key, descriptor);
+        }
+
+        descriptor.BodyNpcTypes.Add(observedType);
+        descriptor.KeepAliveNpcTypes.Add(observedType);
     }
 
     public static bool HasActiveBossClientSide()
@@ -222,11 +373,21 @@ internal static class BossCatalog
         EntriesByNpcType.Clear();
         EntriesByKey.Clear();
         _overrides = [];
+        ResetWorldState();
+    }
+
+    public static void ResetWorldState()
+    {
+        _calamityBossRushQueryTick = -1;
+        _cachedCalamityBossRushActive = false;
+        _calamityBossRushQueryFailures = 0;
+        _calamityBossRushNextRetryTick = 0;
     }
 
     private static BossDescriptor BuildCatalogDescriptor(CatalogEntry entry, int portraitNpcType)
     {
         HashSet<int> body = [.. entry.NpcTypes];
+        int representativeType = entry.NpcTypes.FirstOrDefault(portraitNpcType);
         HashSet<int> knownFinalTypes = body.Contains(NPCID.MoonLordCore)
             ? [NPCID.MoonLordCore]
             : [];
@@ -235,12 +396,16 @@ internal static class BossCatalog
             Key = entry.Key,
             EncounterGroupKey = entry.Key,
             DisplayNameLocalizationKey = entry.DisplayNameLocalizationKey,
-            DisplayNameNpcType = entry.NpcTypes.FirstOrDefault(portraitNpcType),
+            DisplayNameNpcType = representativeType,
             DisplayName = entry.DisplayName,
             // Boss Checklist orders npcIDs with the representative form first. Using that
             // stable ID avoids a segmented boss portrait depending on NPC slot scan order.
-            PortraitNpcType = entry.NpcTypes.FirstOrDefault(portraitNpcType),
+            PortraitNpcType = representativeType,
             BodyNpcTypes = body,
+            // Boss Checklist places the representative/root form first. Additional
+            // root types (for example a paired boss) are learned from authoritative
+            // active NPC scans, while dependent Body/Tail types are never promoted.
+            ControllerNpcTypes = [representativeType],
             KeepAliveNpcTypes = [.. body],
             FinalNpcTypes = knownFinalTypes,
             Downed = entry.Downed,
@@ -263,6 +428,12 @@ internal static class BossCatalog
         HashSet<int> keepAlive = runtime.KeepAliveNpcTypes.Count > 0
             ? [.. body, .. runtime.TriggerNpcTypes, .. runtime.KeepAliveNpcTypes]
             : [.. body, .. runtime.TriggerNpcTypes];
+        HashSet<int> controllers = runtime.ControllerNpcTypes.Count > 0
+            ? [.. runtime.ControllerNpcTypes]
+            : runtime.TriggerNpcTypes.Count > 0
+                ? [runtime.TriggerNpcTypes.Min()]
+                : [body.Min()];
+        keepAlive.UnionWith(controllers);
 
         BossDescriptor descriptor = new()
         {
@@ -278,11 +449,13 @@ internal static class BossCatalog
             DisplayName = string.IsNullOrWhiteSpace(runtime.NameOverride) ? trigger.FullName : runtime.NameOverride,
             PortraitNpcType = runtime.PortraitNpcType >= 0 ? runtime.PortraitNpcType : trigger.type,
             BodyNpcTypes = body,
+            ControllerNpcTypes = controllers,
             KeepAliveNpcTypes = keepAlive,
             FinalNpcTypes = [.. runtime.FinalNpcTypes],
             ExcludedBodyNpcTypes = [.. runtime.AddNpcTypes, .. runtime.BarrierNpcTypes],
             FinishOnBodyDeathWhenNoParticipants = runtime.FinishOnBodyDeathWhenNoParticipants ?? true,
-            ContinueAfterPartyWipe = runtime.ContinueAfterPartyWipe ?? false
+            ContinueAfterPartyWipe = runtime.ContinueAfterPartyWipe ?? false,
+            HasExplicitServerOverride = true
         };
         ApplyGroupLifecycle(descriptor, runtime);
         return descriptor;
@@ -290,6 +463,7 @@ internal static class BossCatalog
 
     private static void ApplyOverride(BossDescriptor descriptor, RuntimeOverride runtime)
     {
+        descriptor.HasExplicitServerOverride = true;
         if (!string.IsNullOrWhiteSpace(runtime.EncounterGroupKey))
             descriptor.EncounterGroupKey = runtime.EncounterGroupKey;
         if (!string.IsNullOrWhiteSpace(runtime.NameLocalizationKey))
@@ -309,6 +483,8 @@ internal static class BossCatalog
             descriptor.PortraitNpcType = runtime.PortraitNpcType;
         if (runtime.BodyNpcTypes.Count > 0)
             descriptor.BodyNpcTypes = [.. runtime.BodyNpcTypes];
+        if (runtime.ControllerNpcTypes.Count > 0)
+            descriptor.ControllerNpcTypes = [.. runtime.ControllerNpcTypes];
         descriptor.ExcludedBodyNpcTypes.UnionWith(runtime.AddNpcTypes);
         descriptor.ExcludedBodyNpcTypes.UnionWith(runtime.BarrierNpcTypes);
         descriptor.BodyNpcTypes.ExceptWith(descriptor.ExcludedBodyNpcTypes);
@@ -324,6 +500,7 @@ internal static class BossCatalog
             descriptor.KeepAliveNpcTypes.UnionWith(descriptor.BodyNpcTypes);
             descriptor.KeepAliveNpcTypes.UnionWith(runtime.TriggerNpcTypes);
         }
+        descriptor.KeepAliveNpcTypes.UnionWith(descriptor.ControllerNpcTypes);
 
         descriptor.FinalNpcTypes.UnionWith(runtime.FinalNpcTypes);
         if (runtime.FinishOnBodyDeathWhenNoParticipants is bool finish)
@@ -345,6 +522,7 @@ internal static class BossCatalog
             descriptor.KeepAliveNpcTypes.UnionWith(member.TriggerNpcTypes);
             descriptor.KeepAliveNpcTypes.UnionWith(member.BodyNpcTypes);
             descriptor.KeepAliveNpcTypes.UnionWith(member.KeepAliveNpcTypes);
+            descriptor.ControllerNpcTypes.UnionWith(member.ControllerNpcTypes);
             descriptor.FinalNpcTypes.UnionWith(member.FinalNpcTypes);
             descriptor.ContinueAfterPartyWipe |= member.ContinueAfterPartyWipe ?? false;
         }
@@ -411,6 +589,7 @@ internal static class BossCatalog
         public int PortraitNpcType { get; set; } = -1;
         public HashSet<int> TriggerNpcTypes { get; set; } = [];
         public HashSet<int> BodyNpcTypes { get; set; } = [];
+        public HashSet<int> ControllerNpcTypes { get; set; } = [];
         public HashSet<int> AddNpcTypes { get; set; } = [];
         public HashSet<int> BarrierNpcTypes { get; set; } = [];
         public HashSet<int> KeepAliveNpcTypes { get; set; } = [];
@@ -421,6 +600,7 @@ internal static class BossCatalog
         public bool ManagesNpcType(int npcType)
             => TriggerNpcTypes.Contains(npcType) ||
                BodyNpcTypes.Contains(npcType) ||
+               ControllerNpcTypes.Contains(npcType) ||
                AddNpcTypes.Contains(npcType) ||
                BarrierNpcTypes.Contains(npcType) ||
                KeepAliveNpcTypes.Contains(npcType) ||

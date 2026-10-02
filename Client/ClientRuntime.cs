@@ -2,6 +2,7 @@ using DaybreakDamageTracker.Client.UI;
 using DaybreakDamageTracker.Common.Bosses;
 using DaybreakDamageTracker.Common.Data;
 using DaybreakDamageTracker.Common.Networking;
+using DaybreakDamageTracker.Common.NPCs;
 using DaybreakDamageTracker.Common.Systems;
 
 namespace DaybreakDamageTracker.Client;
@@ -10,7 +11,11 @@ internal static class ClientRuntime
 {
     private static readonly Dictionary<PrivateSourceBucketKey, MutableSourceTree> CurrentSources = [];
     private static readonly Dictionary<TargetSourceKey, MutableSourceTree> SuspendedSources = [];
+    private static readonly Dictionary<(NpcInstanceKey Instance, int NpcType), HashSet<string>> ExactAssociationKeys = [];
+    private static readonly HashSet<(NpcInstanceKey Instance, int NpcType, string BossKey)> ResolvedExactAssociations = [];
+    private static readonly Dictionary<int, long> LatestNpcSpawnSerials = [];
     private static readonly List<BossPresentation> ActiveBosses = [];
+    private static readonly ChatSummaryBatcher ChatSummary = new();
     private static bool _encounterPrepared;
     private static bool _acceptingPrivateDamage;
     private static int _historyBatchId;
@@ -19,25 +24,36 @@ internal static class ClientRuntime
     private static bool _autoShowResults = true;
     private static int _historyCapacity = 4;
     private static int _autoHideSeconds = 12;
-    private static float _panelBackgroundOpacity = 0.94f;
+    private static float _panelBackgroundOpacity = ClientConfig.DefaultPanelBackgroundOpacity;
+    private static IReadOnlyList<ResultPanelSection> _panelSectionOrder = ResultPanelSectionOrderPolicy.CreateDefault();
+    private static PresentationSettings _effectivePresentation = new();
 
     public static PresentationSettings Presentation { get; private set; } = new();
+    // The server exclusively owns which result sections and row counts are shown.
+    // Clients only control automatic behavior, local history, and background opacity.
+    public static PresentationSettings EffectivePresentation => _effectivePresentation;
     public static long ActiveEncounterId { get; private set; }
     public static bool AutoShowResults => _autoShowResults;
     public static int HistoryCapacity => _historyCapacity;
     public static int AutoHideSeconds => _autoHideSeconds;
     public static float PanelBackgroundOpacity => _panelBackgroundOpacity;
+    public static IReadOnlyList<ResultPanelSection> PanelSectionOrder => _panelSectionOrder;
 
     public static void ResetForWorld()
     {
         Presentation = new PresentationSettings();
+        RecomputeEffectivePresentation();
         ActiveEncounterId = 0;
         _encounterPrepared = false;
         _acceptingPrivateDamage = false;
         _historyBatchId = 0;
         _pendingHistory = [];
+        ChatSummary.Reset();
         CurrentSources.Clear();
         SuspendedSources.Clear();
+        ExactAssociationKeys.Clear();
+        ResolvedExactAssociations.Clear();
+        LatestNpcSpawnSerials.Clear();
         ActiveBosses.Clear();
         ClientResultHistory.Reset();
         _hud?.Hide();
@@ -46,6 +62,7 @@ internal static class ClientRuntime
     public static void ApplyPresentation(PresentationSettings presentation)
     {
         Presentation = presentation.SanitizedClone();
+        RecomputeEffectivePresentation();
         ClientResultHistory.Trim(HistoryCapacity);
         _hud?.RefreshPresentation();
     }
@@ -57,7 +74,7 @@ internal static class ClientRuntime
         _historyCapacity = Math.Clamp(config.HistoryCount, 1, 10);
         _autoHideSeconds = Math.Clamp(config.AutoHideSeconds, 1, 120);
         _panelBackgroundOpacity = Math.Clamp(config.PanelBackgroundOpacity, 0f, 1f);
-
+        _panelSectionOrder = ResultPanelSectionOrderPolicy.Sanitize(config.PanelSectionOrder);
         ClientResultHistory.Trim(HistoryCapacity);
         _hud?.ApplyLocalPreferences();
 
@@ -78,6 +95,9 @@ internal static class ClientRuntime
         hud.ApplyLocalPreferences();
     }
 
+    private static void RecomputeEffectivePresentation()
+        => _effectivePresentation = Presentation.SanitizedClone();
+
     public static void UnregisterHud(DamageResultHudSystem hud)
     {
         if (ReferenceEquals(_hud, hud))
@@ -86,14 +106,19 @@ internal static class ClientRuntime
 
     public static void OnEncounterArmed(long encounterId, IReadOnlyList<BossPresentation> bosses)
     {
-        if (!_encounterPrepared || (ActiveEncounterId != 0 && ActiveEncounterId != encounterId))
+        bool newEncounter = !_encounterPrepared || (ActiveEncounterId != 0 && ActiveEncounterId != encounterId);
+        if (newEncounter)
+        {
             CurrentSources.Clear();
+            ResolvedExactAssociations.Clear();
+        }
 
         ActiveEncounterId = encounterId;
         _encounterPrepared = true;
         _acceptingPrivateDamage = true;
         ActiveBosses.Clear();
         ActiveBosses.AddRange(bosses);
+        RebuildExactAssociations();
         MergeSuspendedSources();
         ResolvePendingSources();
     }
@@ -138,6 +163,8 @@ internal static class ClientRuntime
         _acceptingPrivateDamage = false;
         CurrentSources.Clear();
         ActiveBosses.Clear();
+        ExactAssociationKeys.Clear();
+        ResolvedExactAssociations.Clear();
     }
 
     public static void OnEncounterCompleted(long encounterId)
@@ -158,6 +185,8 @@ internal static class ClientRuntime
         _encounterPrepared = false;
         _acceptingPrivateDamage = false;
         ActiveBosses.Clear();
+        ExactAssociationKeys.Clear();
+        ResolvedExactAssociations.Clear();
     }
 
     public static void RecordPrivateDamage(NPC target, DamageRootKey root, DamageLeafKey leaf, int damage)
@@ -167,7 +196,8 @@ internal static class ClientRuntime
                 target.type,
                 target.realLife >= 0 && target.realLife < Main.maxNPCs
                     ? Main.npc[target.realLife].type
-                    : -1),
+                    : -1,
+                new NpcInstanceKey(target.whoAmI, DamageTrackingGlobalNpc.GetSpawnSerial(target))),
             root,
             leaf,
             damage);
@@ -178,7 +208,7 @@ internal static class ClientRuntime
         DamageLeafKey leaf,
         int damage)
     {
-        if (!target.Eligible || damage <= 0)
+        if (!target.Eligible || damage <= 0 || !target.Instance.IsValid)
             return;
 
         if (!_encounterPrepared)
@@ -203,7 +233,21 @@ internal static class ClientRuntime
         }
 
         TargetSourceKey targetKey = TargetKey(target);
-        PrivateSourceMatch match = PrivateSourceAttributionPolicy.Resolve(MatchingBossKeys(targetKey));
+        PrivateSourceMatch match;
+        if (!string.IsNullOrEmpty(target.ExactOwnerBossKey))
+        {
+            // Server-confirmed DoT carries its owner from capture time. Read neither
+            // today's slot occupant nor today's type association to reassign it.
+            if (!ActiveBosses.Any(value => value.Key.Equals(target.ExactOwnerBossKey, StringComparison.Ordinal)))
+                return;
+            match = new PrivateSourceMatch(PrivateSourceMatchKind.Unique, target.ExactOwnerBossKey);
+        }
+        else
+        {
+            if (IsObsolete(target.Instance))
+                return;
+            match = PrivateSourceAttributionPolicy.Resolve(MatchingBossKeys(targetKey));
+        }
         if (match.Kind == PrivateSourceMatchKind.Ambiguous)
         {
             // The server deliberately excludes ambiguous targets from every Boss.
@@ -233,9 +277,14 @@ internal static class ClientRuntime
         ClientResultHistory.Add(entry, HistoryCapacity);
 
         if (boss is not null)
+        {
+            foreach (AssociatedNpcInstance instance in boss.AssociatedNpcInstances)
+                ResolvedExactAssociations.Add((new NpcInstanceKey(instance.NpcIndex, instance.SpawnSerial), instance.NpcType, boss.Key));
             ActiveBosses.RemoveAll(value => value.Key.Equals(boss.Key, StringComparison.Ordinal));
-        if (Presentation.ChatSummary)
-            Main.NewText(FormatHistoryMap(), new Color(125, 220, 255));
+            RebuildExactAssociations();
+        }
+        if (_effectivePresentation.ChatSummary)
+            ChatSummary.Queue((long)Main.GameUpdateCount);
 
         DamageResultHudSystem? hud = _hud;
         if (hud is null)
@@ -283,6 +332,14 @@ internal static class ClientRuntime
         => "[DT] " + string.Join("  ·  ", ClientResultHistory.Entries
             .Take(HistoryCapacity)
             .Select((entry, index) => FormatCompactSummary(entry.Public, index)));
+
+    public static void FlushPendingChatSummary()
+    {
+        if (!ChatSummary.TryConsume((long)Main.GameUpdateCount))
+            return;
+        if (_effectivePresentation.ChatSummary && ClientResultHistory.Entries.Count > 0)
+            Main.NewText(FormatHistoryMap(), new Color(125, 220, 255));
+    }
 
     public static string FormatDuration(long ticks)
     {
@@ -344,18 +401,117 @@ internal static class ClientRuntime
         int rootNpcType = target.realLife >= 0 && target.realLife < Main.maxNPCs
             ? Main.npc[target.realLife].type
             : -1;
-        return new TargetSourceKey(target.type, rootNpcType);
+        return new TargetSourceKey(
+            new NpcInstanceKey(target.whoAmI, DamageTrackingGlobalNpc.GetSpawnSerial(target)),
+            target.type,
+            rootNpcType,
+            string.Empty);
     }
 
     private static TargetSourceKey TargetKey(TargetSnapshot target)
-        => new(target.NpcType, target.RootNpcType);
+        => new(target.Instance, target.NpcType, target.RootNpcType, target.ExactOwnerBossKey);
 
     private static List<string> MatchingBossKeys(TargetSourceKey target)
-        => ActiveBosses
+    {
+        if (!string.IsNullOrEmpty(target.ExactOwnerBossKey))
+        {
+            return ActiveBosses
+                .Where(value => value.Key.Equals(target.ExactOwnerBossKey, StringComparison.Ordinal))
+                .Select(value => value.Key)
+                .ToList();
+        }
+        if (!target.Instance.IsValid || IsObsolete(target.Instance))
+            return [];
+
+        if (ExactAssociationKeys.TryGetValue((target.Instance, target.NpcType), out HashSet<string>? exact))
+        {
+            return exact.ToList();
+        }
+
+        // A type-only match is safe only while the captured instance is still the
+        // same slot occupant. Late unresolved atoms must never acquire a replacement
+        // NPC's body/root membership merely because its type happens to match.
+        if (target.Instance.Slot >= Main.maxNPCs ||
+            DamageTrackingGlobalNpc.GetSpawnSerial(Main.npc[target.Instance.Slot]) != target.Instance.SpawnSerial)
+            return [];
+
+        return ActiveBosses
             .Where(candidate => Matches(candidate, target))
             .Select(candidate => candidate.Key)
             .Distinct(StringComparer.Ordinal)
             .ToList();
+    }
+
+    public static void OnNpcInstanceReset(int npcIndex)
+    {
+        if (npcIndex < 0)
+            return;
+        RemoveUnresolvedSourcesForSlot(npcIndex, keepSpawnSerial: 0);
+        // Do not clear Armed metadata here: it may have arrived before SyncNPC.
+        // ReceiveExtraAI will identify the replacement and retain its exact mapping.
+    }
+
+    public static void OnNpcInstanceAvailable(NpcInstanceKey instance)
+    {
+        if (!instance.IsValid)
+            return;
+        LatestNpcSpawnSerials[instance.Slot] = instance.SpawnSerial;
+        RemoveUnresolvedSourcesForSlot(instance.Slot, instance.SpawnSerial);
+        foreach ((NpcInstanceKey Instance, int NpcType) key in ExactAssociationKeys.Keys
+                     .Where(key => key.Instance.Slot == instance.Slot && key.Instance.SpawnSerial < instance.SpawnSerial)
+                     .ToArray())
+        {
+            ExactAssociationKeys.Remove(key);
+        }
+        ResolvedExactAssociations.RemoveWhere(value =>
+            value.Instance.Slot == instance.Slot && value.Instance.SpawnSerial < instance.SpawnSerial);
+    }
+
+    private static void RemoveUnresolvedSourcesForSlot(int npcIndex, long keepSpawnSerial)
+    {
+        // Already attributed damage remains attached to the original Boss until its
+        // result is finalized. Only observations still awaiting ownership are stale.
+        foreach (PrivateSourceBucketKey key in CurrentSources.Keys.Where(key =>
+                     string.IsNullOrEmpty(key.BossKey) &&
+                     string.IsNullOrEmpty(key.Target.ExactOwnerBossKey) &&
+                     key.Target.Instance.Slot == npcIndex &&
+                     key.Target.Instance.SpawnSerial != keepSpawnSerial).ToArray())
+            CurrentSources.Remove(key);
+        foreach (TargetSourceKey key in SuspendedSources.Keys.Where(key =>
+                     string.IsNullOrEmpty(key.ExactOwnerBossKey) &&
+                     key.Instance.Slot == npcIndex && key.Instance.SpawnSerial != keepSpawnSerial).ToArray())
+            SuspendedSources.Remove(key);
+    }
+
+    private static bool IsObsolete(NpcInstanceKey instance)
+        => LatestNpcSpawnSerials.TryGetValue(instance.Slot, out long latest) && latest > instance.SpawnSerial;
+
+    private static void RebuildExactAssociations()
+    {
+        ExactAssociationKeys.Clear();
+        foreach (BossPresentation boss in ActiveBosses)
+        {
+            foreach (AssociatedNpcInstance instance in boss.AssociatedNpcInstances)
+            {
+                NpcInstanceKey identity = new(instance.NpcIndex, instance.SpawnSerial);
+                if (!identity.IsValid || IsObsolete(identity))
+                    continue;
+                (NpcInstanceKey Instance, int NpcType) key = (identity, instance.NpcType);
+                if (!ExactAssociationKeys.TryGetValue(key, out HashSet<string>? owners))
+                    ExactAssociationKeys[key] = owners = new HashSet<string>(StringComparer.Ordinal);
+                owners.Add(boss.Key);
+            }
+        }
+        foreach ((NpcInstanceKey instance, int npcType, string bossKey) in ResolvedExactAssociations)
+        {
+            if (IsObsolete(instance))
+                continue;
+            (NpcInstanceKey Instance, int NpcType) key = (instance, npcType);
+            if (!ExactAssociationKeys.TryGetValue(key, out HashSet<string>? owners))
+                ExactAssociationKeys[key] = owners = new HashSet<string>(StringComparer.Ordinal);
+            owners.Add(bossKey);
+        }
+    }
 
     private static void ResolvePendingSources()
     {
@@ -403,6 +559,10 @@ internal static class ClientRuntime
         return tree;
     }
 
-    private readonly record struct TargetSourceKey(int NpcType, int RootNpcType);
+    private readonly record struct TargetSourceKey(
+        NpcInstanceKey Instance,
+        int NpcType,
+        int RootNpcType,
+        string ExactOwnerBossKey);
     private readonly record struct PrivateSourceBucketKey(TargetSourceKey Target, string BossKey);
 }

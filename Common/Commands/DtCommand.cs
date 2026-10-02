@@ -54,10 +54,18 @@ internal sealed class DtCommand : ModCommand
             return;
         }
 
-        if (int.TryParse(args[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out int index) &&
-            ClientResultHistory.GetZeroBased(index) is ClientHistoryEntry selected)
+        if (int.TryParse(args[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out int index))
         {
-            hud.Show(selected, automatic: false);
+            if (ClientResultHistory.GetZeroBased(index) is ClientHistoryEntry selected)
+            {
+                hud.Show(selected, automatic: false);
+                return;
+            }
+
+            caller.Reply(ClientRuntime.Text(
+                "Commands.Dt.NoHistoryAtIndex",
+                "No saved damage result is available through /dt{0}.",
+                index), Color.Gray);
             return;
         }
 

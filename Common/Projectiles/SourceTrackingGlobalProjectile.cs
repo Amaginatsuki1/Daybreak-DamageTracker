@@ -84,6 +84,10 @@ internal sealed class SourceTrackingGlobalProjectile : GlobalProjectile
     private void ShareServerSourceWithOwner(Projectile projectile)
     {
         if (Main.netMode == NetmodeID.Server && CanShareWithOwner && projectile.identity >= 0)
-            DamageNetwork.SendProjectileProvenance(projectile, RootSource);
+            DamageNetwork.EnqueueProjectileProvenance(
+                projectile.owner,
+                projectile.identity,
+                projectile.type,
+                RootSource);
     }
 }

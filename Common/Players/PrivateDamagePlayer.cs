@@ -14,6 +14,7 @@ internal sealed class PrivateDamagePlayer : ModPlayer
         if (Main.dedServ || Player.whoAmI != Main.myPlayer)
             return;
 
+        ProjectileProvenanceRegistry.Reset();
         ClientRuntime.ResetForWorld();
         if (Main.netMode == NetmodeID.MultiplayerClient)
             DamageNetwork.RequestServerState();
@@ -24,10 +25,13 @@ internal sealed class PrivateDamagePlayer : ModPlayer
     public override void PlayerDisconnect()
     {
         if (Main.netMode == NetmodeID.Server)
-        {
-            DamageNetwork.ForgetStateRequestsForPlayer(Player.whoAmI);
-            PlayerConnectionRegistry.MarkDisconnected(Player.whoAmI);
-        }
+            PlayerConnectionRegistry.QueueDisconnected(Player.whoAmI);
+    }
+
+    public override void PostUpdate()
+    {
+        if (!Main.dedServ && Player.whoAmI == Main.myPlayer)
+            DamageNetwork.UpdateClientStateRequest();
     }
 
     public override void OnHitNPCWithItem(Item item, NPC target, NPC.HitInfo hit, int damageDone)

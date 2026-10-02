@@ -18,9 +18,16 @@ internal static class ProjectileProvenanceRegistry
         if (TryApply(owner, identity, projectileType, source))
             return;
 
-        if (Pending.Count >= MaximumPendingEntries)
-            Pending.Clear();
-        Pending[new ProjectileKey(owner, identity)] = new PendingSource(
+        ProjectileKey key = new(owner, identity);
+        if (Pending.Count >= MaximumPendingEntries && !Pending.ContainsKey(key))
+        {
+            ProjectileKey oldest = Pending
+                .OrderBy(pair => pair.Value.ExpiresAtTick)
+                .Select(pair => pair.Key)
+                .First();
+            Pending.Remove(oldest);
+        }
+        Pending[key] = new PendingSource(
             projectileType,
             source,
             (long)Main.GameUpdateCount + PendingLifetimeTicks);

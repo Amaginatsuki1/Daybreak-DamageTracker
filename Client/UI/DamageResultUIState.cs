@@ -21,12 +21,14 @@ internal sealed class DamageResultUIState : UIState
                 ApplyPanelLayout();
             ModContent.GetInstance<DamageResultHudSystem>().KeepOpenAfterInteraction();
         };
+        _panel.ScrollInteraction += () =>
+            ModContent.GetInstance<DamageResultHudSystem>().KeepOpenAfterInteraction();
         Append(_panel);
 
         Asset<Texture2D> closeTexture = ModContent.Request<Texture2D>("Terraria/Images/UI/ButtonDelete");
         _closeButton = new CloseOnlyButton(closeTexture);
-        _closeButton.Width.Set(22f, 0f);
-        _closeButton.Height.Set(22f, 0f);
+        _closeButton.Width.Set(ResultPanelElement.CloseButtonSize, 0f);
+        _closeButton.Height.Set(ResultPanelElement.CloseButtonSize, 0f);
         _closeButton.OnLeftClick += (_, _) => ModContent.GetInstance<DamageResultHudSystem>().Hide();
         Append(_closeButton);
     }
@@ -34,9 +36,10 @@ internal sealed class DamageResultUIState : UIState
     public void Bind(
         IReadOnlyList<ClientHistoryEntry> entries,
         Common.Data.PresentationSettings settings,
-        float backgroundOpacity)
+        float backgroundOpacity,
+        IReadOnlyList<ResultPanelSection> sectionOrder)
     {
-        _panel.Bind(entries, settings, backgroundOpacity);
+        _panel.Bind(entries, settings, backgroundOpacity, sectionOrder);
         ApplyPanelLayout();
     }
 
@@ -54,8 +57,15 @@ internal sealed class DamageResultUIState : UIState
         _panel.Left.Set(-_panel.DesiredWidth / 2f, 0.5f);
         _panel.Top.Set(PanelTop, 0f);
 
-        _closeButton.Left.Set(_panel.DesiredWidth / 2f - 34f, 0.5f);
-        _closeButton.Top.Set(PanelTop + 12f, 0f);
+        float closeSize = Math.Max(1f, Math.Min(ResultPanelElement.CloseButtonSize, _panel.DesiredWidth - 4f));
+        float closeInset = Math.Min(ResultPanelElement.CloseButtonInset, Math.Max(2f, (_panel.DesiredWidth - closeSize) / 2f));
+        _closeButton.Width.Set(closeSize, 0f);
+        _closeButton.Height.Set(closeSize, 0f);
+        float closeLeft = Math.Max(
+            -_panel.DesiredWidth / 2f,
+            _panel.DesiredWidth / 2f - closeSize - closeInset);
+        _closeButton.Left.Set(closeLeft, 0.5f);
+        _closeButton.Top.Set(PanelTop + ResultPanelElement.CloseButtonInset, 0f);
         Recalculate();
     }
 

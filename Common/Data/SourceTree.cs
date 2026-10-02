@@ -129,12 +129,16 @@ internal sealed class MutableSourceTree
         if (finalKnown < canonicalTotal)
         {
             long missing = canonicalTotal - finalKnown;
-            rebuilt[new DamageRootKey(DamageRootKind.Unclassified, 0)] = new SourceRootSnapshot
+            DamageRootKey unclassifiedKey = new(DamageRootKind.Unclassified, 0);
+            if (!rebuilt.TryGetValue(unclassifiedKey, out SourceRootSnapshot? unclassified))
             {
-                Key = new DamageRootKey(DamageRootKind.Unclassified, 0),
-                Damage = missing,
-                Leaves = []
-            };
+                unclassified = new SourceRootSnapshot { Key = unclassifiedKey };
+                rebuilt[unclassifiedKey] = unclassified;
+            }
+            // Existing unclassified atoms are still observed damage (for example an
+            // owner-known DoT without a weapon source). Preserve them and their leaves
+            // when adding the genuinely missing part of the authoritative total.
+            unclassified.Damage = checked(unclassified.Damage + missing);
         }
 
         return new SourceTreeSnapshot
